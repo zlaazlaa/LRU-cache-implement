@@ -1,5 +1,5 @@
 #include"lockfree_hashtable.h"
-#include"test.h"
+#include"LRUCache.h"
 #include"double_link_list.h"
 #include"operate_list.h"
 #include<iostream>
