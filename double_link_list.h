@@ -74,7 +74,6 @@ public:
 
     Node *insert_kv_to_top(key_type key, value_type value) { // insert (key, value), with creating node
         Node *now = new Node(key, value);
-        now->head = head;
         insert_node_to_top(now);
         return now;
     }
@@ -90,6 +89,7 @@ public:
             std::this_thread::sleep_for(std::chrono::milliseconds(10));
             std::unique_lock lockhead2(head->tail->mut, std::try_to_lock);
         }
+        now->head = head;
         now->tail = head->tail;
         head->tail->head = now;
         head->tail = now;

@@ -16,11 +16,13 @@ typedef operate_list<key_type, value_type> list_type;
 typedef list_type::Node node_type;
 typedef LockFreeHashTable<key_type, node_type *> hash_type;
 
-const int key_range = 100; // [0, key_range]
-const int job_num = 1000;
-const int client_num = 10;
+const int key_range = 1000; // [0, key_range]
+const int job_num = 1000000;
+const int client_num = 1000;
 const float read_rate = 0.8;
 const int cache_capacity = 100;
+std::atomic<int>get_sum(0);
+std::atomic<int>hit_sum(0);
 struct Task {
     key_type key;
     value_type value;
@@ -32,7 +34,10 @@ void start_task(int client_id, LRUCache<key_type, value_type, hash_type, list_ty
     for (int i = 1;i <= job_num / client_num;i ++) {
         Task now = task[client_id][i];
         if (now.job_type) { // get
-            cache->get(now.key);
+            if (cache->get(now.key) != -1) {
+                hit_sum.fetch_add(1);
+            }
+            get_sum.fetch_add(1);
         } else {
             cache->put(now.key, now.value);
         }
@@ -52,7 +57,7 @@ int main() {
             task[i][j] = {dis(gen), dis(gen), (dis2(gen) > read_rate) ? false : true}; // false -> put, true -> get;
         }
     }
-    printf("任务生成完毕, 线程数:%d, 任务总量:%d, 读操作比重:%f", client_num, job_num, read_rate);
+    printf("任务生成完毕, 线程数:%d, 任务总量:%d, 读操作比重:%f\n", client_num, job_num, read_rate);
     auto start_time = std::chrono::high_resolution_clock::now();
     for (int i = 1;i <= client_num;i ++) {
         threads[i] = std::thread(start_task, i, lRUCache);
@@ -62,5 +67,6 @@ int main() {
     auto duration = std::chrono::duration_cast<std::chrono::microseconds>(end_time - start_time);
     cout << "任务执行完毕" << endl;
     std::cout << "程序运行时间：" << duration.count() << " 微秒" << std::endl;
+    std::cout << "总get:" << get_sum.load() << ", 命中次数:" << hit_sum.load() << ", 命中率:" << (float)hit_sum.load()/get_sum.load() << endl;
     return 0;
 }
