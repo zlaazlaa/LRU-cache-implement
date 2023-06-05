@@ -1,16 +1,20 @@
 #include"lockfree_hashtable.h"
 #include"test.h"
+#include"double_link_list.h"
+// #include"operate_list.h"
 #include<iostream>
 using namespace std;
 using key_type = int;
 using value_type = int;
-typedef Node<key_type, value_type> node;
+
+typedef double_link_list<key_type, value_type> list_type;
+typedef list_type::Node node_type;
+typedef LockFreeHashTable<key_type, node_type*> hash_type;
 
 int main() {
-    node *head = new node();
-    node *tail = new node();
-    LockFreeHashTable<key_type, node*> *hash = new LockFreeHashTable<key_type, node*>();
-    LRUCache<key_type, value_type> *lRUCache = new LRUCache<key_type, value_type>(2, hash, head, tail);
+    list_type *list = new list_type(2);
+    hash_type *hash = new hash_type();
+    LRUCache<key_type, value_type, hash_type, list_type, node_type> *lRUCache = new LRUCache<key_type, value_type, hash_type, list_type, node_type>(2, hash, list);
     lRUCache->put(1, 1); // 缓存是 {1=1}
     lRUCache->put(2, 2); // 缓存是 {1=1, 2=2}
     cout << lRUCache->get(1) << endl;    // 返回 1
