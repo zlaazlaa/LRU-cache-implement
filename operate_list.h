@@ -6,28 +6,21 @@
 template <typename key_type, typename value_type>
 class operate_list : public double_link_list<key_type, value_type> {
 public:
-    using double_link_list<key_type, value_type>::Node;
-    using double_link_list<key_type, value_type>::double_link_list;
-    using typename double_link_list<key_type, value_type>::Node;
-    typedef typename double_link_list<key_type, value_type>::Node node_type;
-    typedef LockFreeHashTable<key_type, node_type*> hash_type;
-    
-    operate_list(int capacity) : double_link_list(capacity) {
+    using Node = typename double_link_list<key_type, value_type>::Node;
 
-    }
+    operate_list(int capacity) : double_link_list<key_type, value_type>(capacity) {}
 
     void move_to_top(Node *now) {
-        remove_node(now);
-        insert_node_to_top(now);
+        this->remove_node(now);
+        this->insert_node_to_top(now);
     }
 
-    void insert_to_top(key_type key, value_type value, hash_type *hash) {
-        if (get_size() >= capacity) {
-            delete_node(tail);
-            hash->Delete(key);
+    Node* insert_to_top(key_type key, value_type value, LockFreeHashTable<key_type, Node*> *hash) {
+        if (this->get_size() >= this->capacity) {
+            hash->Delete(this->tail->head->key);
+            this->delete_node(this->tail->head);
         }
-        insert_kv_to_top(key, value);
+        return this->insert_kv_to_top(key, value);
     }
 };
-
 #endif

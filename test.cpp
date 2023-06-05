@@ -1,13 +1,13 @@
 #include"lockfree_hashtable.h"
 #include"test.h"
 #include"double_link_list.h"
-// #include"operate_list.h"
+#include"operate_list.h"
 #include<iostream>
 using namespace std;
 using key_type = int;
 using value_type = int;
 
-typedef double_link_list<key_type, value_type> list_type;
+typedef operate_list<key_type, value_type> list_type;
 typedef list_type::Node node_type;
 typedef LockFreeHashTable<key_type, node_type*> hash_type;
 

@@ -44,7 +44,7 @@ public:
         if (hash->Find(key, target)) { // find and move to top
             list->move_to_top(target);
         } else { // not find
-            T5 *new_node = list->insert_kv_to_top(key, value);
+            T5 *new_node = list->insert_to_top(key, value, hash);
             hash->Insert(key, new_node);
         }
     }

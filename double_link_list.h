@@ -97,11 +97,11 @@ public:
     }
 
     int get_size() const { return size.load(std::memory_order_relaxed); }
-
-private : 
+    int capacity;
+    std::atomic<int> size; // use atomic to avoid mutex cost
     Node *head;
     Node *tail;
-    std::atomic<int> size; // use atomic to avoid mutex cost
-    int capacity;
+private :     
+    
 };
 #endif
