@@ -2,3 +2,6 @@
 test
 *.o
 info.plist
+aa
+thread_test
+thread_test_random

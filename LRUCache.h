@@ -5,9 +5,8 @@
 #include"lockfree_hashtable.h"
 #include"double_link_list.h"
 #include<iostream>
+#include<string>
 using namespace std;
-using key_type = int;
-using value_type = int;
 
 // template<typename T1, typename T2>
 // class Node {
@@ -23,9 +22,10 @@ using value_type = int;
 template<typename T1, typename T2, typename T3, typename T4, typename T5> // key_type, value_type, hash_type, list_type, node_type
 class LRUCache {
 public:
-    LRUCache(int capacity, T3 *hash, T4 * list) {
+    LRUCache(int capacity, T3 *hash, T4 *list, T2 *error_info) {
         this->hash = hash;
         this->list = list;
+        this->error_info = error_info;
     }
     T2 get(T1 key) {
         T5 *target;
@@ -34,7 +34,7 @@ public:
             hash->Delete(key);
             hash->Insert(key, target);
         } else { // not find
-            return -1;
+            return *this->error_info;
         }
         return target->value;
     }
@@ -53,5 +53,6 @@ private:
     T5 *head, *tail;
     T3 *hash = nullptr;
     T4 *list = nullptr;
+    T2 *error_info = nullptr;
 };
 #endif

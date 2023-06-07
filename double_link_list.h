@@ -16,7 +16,7 @@ public:
         Node *head;
         std::shared_mutex mut;
         Node(key_type k, value_type v) : key(k), value(v), tail(nullptr), head(nullptr) {}
-        Node() : key(0), value(0), tail(nullptr), head(nullptr) {}
+        Node() : tail(nullptr), head(nullptr) {}
     };
 
     double_link_list(int capacity) {
