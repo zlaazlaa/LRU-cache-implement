@@ -23,7 +23,7 @@ typedef LockFreeHashTable<key_type, node_type *> hash_type;
 
 const int key_range = 1000; // [0, key_range] // Corpus size
 const int job_num = 1000000;
-const int client_num = 4;
+const int client_num = 5;
 const float read_rate = 0.8;
 const int cache_capacity = 100;
 const int key_len = 8;
@@ -37,57 +37,31 @@ struct Task {
 };
 Task task[client_num + 1][job_num / client_num + 1];
 std::thread threads[client_num];
+int numStrings = key_range;  // 总共的字符串数量
+double zipfianAlpha = 1.0;  // Zipfian 分布的参数
+ZipfianStringGenerator generator_key(numStrings, zipfianAlpha, key_len);
+ZipfianStringGenerator generator_value(numStrings, zipfianAlpha, value_len);
+std::random_device rd;
+std::mt19937 gen(rd());
+std::uniform_int_distribution<> dis(0, key_range);
+std::uniform_real_distribution<> dis2(0, 1);
 void start_task(int client_id, LRUCache<key_type, value_type, hash_type, list_type, node_type> *cache) {
     for (int i = 1;i <= job_num / client_num;i ++) {
-        Task now = task[client_id][i];
-        if (now.job_type) { // get
-            if (cache->get(now.key) != error_info) {
+        if (dis2(gen) > read_rate) { // get
+            if (cache->get(generator_key.getRandomString()) != error_info) {
                 hit_sum.fetch_add(1);
             }
             get_sum.fetch_add(1);
         } else {
-            cache->put(now.key, now.value);
+            cache->put(generator_key.getRandomString(), generator_value.getRandomString());
         }
-    }
-}
-
-string keys[job_num], values[job_num];
-
-void generate_zipfian_data() {
-    int numStrings = key_range;  // 总共的字符串数量
-    double zipfianAlpha = 1.0;  // Zipfian 分布的参数
-    ZipfianStringGenerator generator_key(numStrings, zipfianAlpha, key_len);
-    ZipfianStringGenerator generator_value(numStrings, zipfianAlpha, value_len);
-
-    int testCount = job_num;
-    for (int i = 0; i < testCount; ++i) {
-        std::string randomString = generator_key.getRandomString();
-        keys[i] = randomString;
-        // keys.push_back(randomString);
-    }
-
-    for (int i = 0; i < testCount; ++i) {
-        std::string randomString = generator_value.getRandomString();
-        values[i] = randomString;
-        // values.push_back(randomString);
     }
 }
 
 int main() {
-    generate_zipfian_data();
     list_type *list = new list_type(cache_capacity);
     hash_type *hash = new hash_type();
     LRUCache<key_type, value_type, hash_type, list_type, node_type> *lRUCache = new LRUCache<key_type, value_type, hash_type, list_type, node_type>(2, hash, list, &error_info);
-    std::random_device rd;
-    std::mt19937 gen(rd());
-    std::uniform_int_distribution<> dis(0, key_range);
-    std::uniform_real_distribution<> dis2(0, 1);
-    for (int i = 1; i <= client_num; i++) {
-        for (int j = 1; j <= job_num / client_num; j++) {
-            int now_num = (i - 1) * job_num / client_num;
-            task[i][j] = {keys[now_num + j], values[now_num + j], (dis2(gen) > read_rate) ? false : true}; // false -> put, true -> get;
-        }
-    }
     printf("任务生成完毕, 线程数:%d, 任务总量:%d, 读操作比重:%f\n", client_num, job_num, read_rate);
     auto start_time = std::chrono::high_resolution_clock::now();
     for (int i = 1;i <= client_num;i ++) {
