@@ -23,7 +23,7 @@ typedef LockFreeHashTable<key_type, node_type *> hash_type;
 
 const int key_range = 1000; // [0, key_range] // Corpus size
 const int job_num = 1000000;
-const int client_num = 10;
+const int client_num = 4;
 const float read_rate = 0.8;
 const int cache_capacity = 100;
 const int key_len = 8;
