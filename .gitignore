@@ -9,3 +9,6 @@ single_test_random
 single_test_zipfain
 thread_test_zipfain
 master.zip
+in-fb.data
+in-fb.folded
+in-fb.perf

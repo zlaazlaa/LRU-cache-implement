@@ -1,0 +1,2041 @@
+<?xml version="1.0" standalone="no"?>
+<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">
+<svg version="1.1" width="1200" height="710" onload="init(evt)" viewBox="0 0 1200 710" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">
+<!-- Flame graph stack visualization. See https://github.com/brendangregg/FlameGraph for latest version, and http://www.brendangregg.com/flamegraphs.html for examples. -->
+<!-- NOTES:  -->
+<defs>
+	<linearGradient id="background" y1="0" y2="1" x1="0" x2="0" >
+		<stop stop-color="#eeeeee" offset="5%" />
+		<stop stop-color="#eeeeb0" offset="95%" />
+	</linearGradient>
+</defs>
+<style type="text/css">
+	text { font-family:Verdana; font-size:12px; fill:rgb(0,0,0); }
+	#search, #ignorecase { opacity:0.1; cursor:pointer; }
+	#search:hover, #search.show, #ignorecase:hover, #ignorecase.show { opacity:1; }
+	#subtitle { text-anchor:middle; font-color:rgb(160,160,160); }
+	#title { text-anchor:middle; font-size:17px}
+	#unzoom { cursor:pointer; }
+	#frames > *:hover { stroke:black; stroke-width:0.5; cursor:pointer; }
+	.hide { display:none; }
+	.parent { opacity:0.5; }
+</style>
+<script type="text/ecmascript">
+<![CDATA[
+	"use strict";
+	var details, searchbtn, unzoombtn, matchedtxt, svg, searching, currentSearchTerm, ignorecase, ignorecaseBtn;
+	function init(evt) {
+		details = document.getElementById("details").firstChild;
+		searchbtn = document.getElementById("search");
+		ignorecaseBtn = document.getElementById("ignorecase");
+		unzoombtn = document.getElementById("unzoom");
+		matchedtxt = document.getElementById("matched");
+		svg = document.getElementsByTagName("svg")[0];
+		searching = 0;
+		currentSearchTerm = null;
+
+		// use GET parameters to restore a flamegraphs state.
+		var params = get_params();
+		if (params.x && params.y)
+			zoom(find_group(document.querySelector('[x="' + params.x + '"][y="' + params.y + '"]')));
+                if (params.s) search(params.s);
+	}
+
+	// event listeners
+	window.addEventListener("click", function(e) {
+		var target = find_group(e.target);
+		if (target) {
+			if (target.nodeName == "a") {
+				if (e.ctrlKey === false) return;
+				e.preventDefault();
+			}
+			if (target.classList.contains("parent")) unzoom(true);
+			zoom(target);
+			if (!document.querySelector('.parent')) {
+				// we have basically done a clearzoom so clear the url
+				var params = get_params();
+				if (params.x) delete params.x;
+				if (params.y) delete params.y;
+				history.replaceState(null, null, parse_params(params));
+				unzoombtn.classList.add("hide");
+				return;
+			}
+
+			// set parameters for zoom state
+			var el = target.querySelector("rect");
+			if (el && el.attributes && el.attributes.y && el.attributes._orig_x) {
+				var params = get_params()
+				params.x = el.attributes._orig_x.value;
+				params.y = el.attributes.y.value;
+				history.replaceState(null, null, parse_params(params));
+			}
+		}
+		else if (e.target.id == "unzoom") clearzoom();
+		else if (e.target.id == "search") search_prompt();
+		else if (e.target.id == "ignorecase") toggle_ignorecase();
+	}, false)
+
+	// mouse-over for info
+	// show
+	window.addEventListener("mouseover", function(e) {
+		var target = find_group(e.target);
+		if (target) details.nodeValue = "Function: " + g_to_text(target);
+	}, false)
+
+	// clear
+	window.addEventListener("mouseout", function(e) {
+		var target = find_group(e.target);
+		if (target) details.nodeValue = ' ';
+	}, false)
+
+	// ctrl-F for search
+	// ctrl-I to toggle case-sensitive search
+	window.addEventListener("keydown",function (e) {
+		if (e.keyCode === 114 || (e.ctrlKey && e.keyCode === 70)) {
+			e.preventDefault();
+			search_prompt();
+		}
+		else if (e.ctrlKey && e.keyCode === 73) {
+			e.preventDefault();
+			toggle_ignorecase();
+		}
+	}, false)
+
+	// functions
+	function get_params() {
+		var params = {};
+		var paramsarr = window.location.search.substr(1).split('&');
+		for (var i = 0; i < paramsarr.length; ++i) {
+			var tmp = paramsarr[i].split("=");
+			if (!tmp[0] || !tmp[1]) continue;
+			params[tmp[0]]  = decodeURIComponent(tmp[1]);
+		}
+		return params;
+	}
+	function parse_params(params) {
+		var uri = "?";
+		for (var key in params) {
+			uri += key + '=' + encodeURIComponent(params[key]) + '&';
+		}
+		if (uri.slice(-1) == "&")
+			uri = uri.substring(0, uri.length - 1);
+		if (uri == '?')
+			uri = window.location.href.split('?')[0];
+		return uri;
+	}
+	function find_child(node, selector) {
+		var children = node.querySelectorAll(selector);
+		if (children.length) return children[0];
+	}
+	function find_group(node) {
+		var parent = node.parentElement;
+		if (!parent) return;
+		if (parent.id == "frames") return node;
+		return find_group(parent);
+	}
+	function orig_save(e, attr, val) {
+		if (e.attributes["_orig_" + attr] != undefined) return;
+		if (e.attributes[attr] == undefined) return;
+		if (val == undefined) val = e.attributes[attr].value;
+		e.setAttribute("_orig_" + attr, val);
+	}
+	function orig_load(e, attr) {
+		if (e.attributes["_orig_"+attr] == undefined) return;
+		e.attributes[attr].value = e.attributes["_orig_" + attr].value;
+		e.removeAttribute("_orig_"+attr);
+	}
+	function g_to_text(e) {
+		var text = find_child(e, "title").firstChild.nodeValue;
+		return (text)
+	}
+	function g_to_func(e) {
+		var func = g_to_text(e);
+		// if there's any manipulation we want to do to the function
+		// name before it's searched, do it here before returning.
+		return (func);
+	}
+	function update_text(e) {
+		var r = find_child(e, "rect");
+		var t = find_child(e, "text");
+		var w = parseFloat(r.attributes.width.value) -3;
+		var txt = find_child(e, "title").textContent.replace(/\([^(]*\)$/,"");
+		t.attributes.x.value = parseFloat(r.attributes.x.value) + 3;
+
+		// Smaller than this size won't fit anything
+		if (w < 2 * 12 * 0.59) {
+			t.textContent = "";
+			return;
+		}
+
+		t.textContent = txt;
+		var sl = t.getSubStringLength(0, txt.length);
+		// check if only whitespace or if we can fit the entire string into width w
+		if (/^ *$/.test(txt) || sl < w)
+			return;
+
+		// this isn't perfect, but gives a good starting point
+		// and avoids calling getSubStringLength too often
+		var start = Math.floor((w/sl) * txt.length);
+		for (var x = start; x > 0; x = x-2) {
+			if (t.getSubStringLength(0, x + 2) <= w) {
+				t.textContent = txt.substring(0, x) + "..";
+				return;
+			}
+		}
+		t.textContent = "";
+	}
+
+	// zoom
+	function zoom_reset(e) {
+		if (e.attributes != undefined) {
+			orig_load(e, "x");
+			orig_load(e, "width");
+		}
+		if (e.childNodes == undefined) return;
+		for (var i = 0, c = e.childNodes; i < c.length; i++) {
+			zoom_reset(c[i]);
+		}
+	}
+	function zoom_child(e, x, ratio) {
+		if (e.attributes != undefined) {
+			if (e.attributes.x != undefined) {
+				orig_save(e, "x");
+				e.attributes.x.value = (parseFloat(e.attributes.x.value) - x - 10) * ratio + 10;
+				if (e.tagName == "text")
+					e.attributes.x.value = find_child(e.parentNode, "rect[x]").attributes.x.value + 3;
+			}
+			if (e.attributes.width != undefined) {
+				orig_save(e, "width");
+				e.attributes.width.value = parseFloat(e.attributes.width.value) * ratio;
+			}
+		}
+
+		if (e.childNodes == undefined) return;
+		for (var i = 0, c = e.childNodes; i < c.length; i++) {
+			zoom_child(c[i], x - 10, ratio);
+		}
+	}
+	function zoom_parent(e) {
+		if (e.attributes) {
+			if (e.attributes.x != undefined) {
+				orig_save(e, "x");
+				e.attributes.x.value = 10;
+			}
+			if (e.attributes.width != undefined) {
+				orig_save(e, "width");
+				e.attributes.width.value = parseInt(svg.width.baseVal.value) - (10 * 2);
+			}
+		}
+		if (e.childNodes == undefined) return;
+		for (var i = 0, c = e.childNodes; i < c.length; i++) {
+			zoom_parent(c[i]);
+		}
+	}
+	function zoom(node) {
+		var attr = find_child(node, "rect").attributes;
+		var width = parseFloat(attr.width.value);
+		var xmin = parseFloat(attr.x.value);
+		var xmax = parseFloat(xmin + width);
+		var ymin = parseFloat(attr.y.value);
+		var ratio = (svg.width.baseVal.value - 2 * 10) / width;
+
+		// XXX: Workaround for JavaScript float issues (fix me)
+		var fudge = 0.0001;
+
+		unzoombtn.classList.remove("hide");
+
+		var el = document.getElementById("frames").children;
+		for (var i = 0; i < el.length; i++) {
+			var e = el[i];
+			var a = find_child(e, "rect").attributes;
+			var ex = parseFloat(a.x.value);
+			var ew = parseFloat(a.width.value);
+			var upstack;
+			// Is it an ancestor
+			if (0 == 0) {
+				upstack = parseFloat(a.y.value) > ymin;
+			} else {
+				upstack = parseFloat(a.y.value) < ymin;
+			}
+			if (upstack) {
+				// Direct ancestor
+				if (ex <= xmin && (ex+ew+fudge) >= xmax) {
+					e.classList.add("parent");
+					zoom_parent(e);
+					update_text(e);
+				}
+				// not in current path
+				else
+					e.classList.add("hide");
+			}
+			// Children maybe
+			else {
+				// no common path
+				if (ex < xmin || ex + fudge >= xmax) {
+					e.classList.add("hide");
+				}
+				else {
+					zoom_child(e, xmin, ratio);
+					update_text(e);
+				}
+			}
+		}
+		search();
+	}
+	function unzoom(dont_update_text) {
+		unzoombtn.classList.add("hide");
+		var el = document.getElementById("frames").children;
+		for(var i = 0; i < el.length; i++) {
+			el[i].classList.remove("parent");
+			el[i].classList.remove("hide");
+			zoom_reset(el[i]);
+			if(!dont_update_text) update_text(el[i]);
+		}
+		search();
+	}
+	function clearzoom() {
+		unzoom();
+
+		// remove zoom state
+		var params = get_params();
+		if (params.x) delete params.x;
+		if (params.y) delete params.y;
+		history.replaceState(null, null, parse_params(params));
+	}
+
+	// search
+	function toggle_ignorecase() {
+		ignorecase = !ignorecase;
+		if (ignorecase) {
+			ignorecaseBtn.classList.add("show");
+		} else {
+			ignorecaseBtn.classList.remove("show");
+		}
+		reset_search();
+		search();
+	}
+	function reset_search() {
+		var el = document.querySelectorAll("#frames rect");
+		for (var i = 0; i < el.length; i++) {
+			orig_load(el[i], "fill")
+		}
+		var params = get_params();
+		delete params.s;
+		history.replaceState(null, null, parse_params(params));
+	}
+	function search_prompt() {
+		if (!searching) {
+			var term = prompt("Enter a search term (regexp " +
+			    "allowed, eg: ^ext4_)"
+			    + (ignorecase ? ", ignoring case" : "")
+			    + "\nPress Ctrl-i to toggle case sensitivity", "");
+			if (term != null) search(term);
+		} else {
+			reset_search();
+			searching = 0;
+			currentSearchTerm = null;
+			searchbtn.classList.remove("show");
+			searchbtn.firstChild.nodeValue = "Search"
+			matchedtxt.classList.add("hide");
+			matchedtxt.firstChild.nodeValue = ""
+		}
+	}
+	function search(term) {
+		if (term) currentSearchTerm = term;
+
+		var re = new RegExp(currentSearchTerm, ignorecase ? 'i' : '');
+		var el = document.getElementById("frames").children;
+		var matches = new Object();
+		var maxwidth = 0;
+		for (var i = 0; i < el.length; i++) {
+			var e = el[i];
+			var func = g_to_func(e);
+			var rect = find_child(e, "rect");
+			if (func == null || rect == null)
+				continue;
+
+			// Save max width. Only works as we have a root frame
+			var w = parseFloat(rect.attributes.width.value);
+			if (w > maxwidth)
+				maxwidth = w;
+
+			if (func.match(re)) {
+				// highlight
+				var x = parseFloat(rect.attributes.x.value);
+				orig_save(rect, "fill");
+				rect.attributes.fill.value = "rgb(230,0,230)";
+
+				// remember matches
+				if (matches[x] == undefined) {
+					matches[x] = w;
+				} else {
+					if (w > matches[x]) {
+						// overwrite with parent
+						matches[x] = w;
+					}
+				}
+				searching = 1;
+			}
+		}
+		if (!searching)
+			return;
+		var params = get_params();
+		params.s = currentSearchTerm;
+		history.replaceState(null, null, parse_params(params));
+
+		searchbtn.classList.add("show");
+		searchbtn.firstChild.nodeValue = "Reset Search";
+
+		// calculate percent matched, excluding vertical overlap
+		var count = 0;
+		var lastx = -1;
+		var lastw = 0;
+		var keys = Array();
+		for (k in matches) {
+			if (matches.hasOwnProperty(k))
+				keys.push(k);
+		}
+		// sort the matched frames by their x location
+		// ascending, then width descending
+		keys.sort(function(a, b){
+			return a - b;
+		});
+		// Step through frames saving only the biggest bottom-up frames
+		// thanks to the sort order. This relies on the tree property
+		// where children are always smaller than their parents.
+		var fudge = 0.0001;	// JavaScript floating point
+		for (var k in keys) {
+			var x = parseFloat(keys[k]);
+			var w = matches[keys[k]];
+			if (x >= lastx + lastw - fudge) {
+				count += w;
+				lastx = x;
+				lastw = w;
+			}
+		}
+		// display matched percent
+		matchedtxt.classList.remove("hide");
+		var pct = 100 * count / maxwidth;
+		if (pct != 100) pct = pct.toFixed(1)
+		matchedtxt.firstChild.nodeValue = "Matched: " + pct + "%";
+	}
+]]>
+</script>
+<rect x="0.0" y="0" width="1200.0" height="710.0" fill="url(#background)"  />
+<text id="title" x="600.00" y="24" >Flame Graph</text>
+<text id="details" x="10.00" y="693" > </text>
+<text id="unzoom" x="10.00" y="24" class="hide">Reset Zoom</text>
+<text id="search" x="1090.00" y="24" >Search</text>
+<text id="ignorecase" x="1174.00" y="24" >ic</text>
+<text id="matched" x="1090.00" y="693" > </text>
+<g id="frames">
+<g >
+<title>std::shared_mutex::try_lock_shared (10,101,010 samples, 0.02%)</title><rect x="41.8" y="389" width="0.2" height="15.0" fill="rgb(207,170,16)" rx="2" ry="2" />
+<text  x="44.83" y="399.5" ></text>
+</g>
+<g >
+<title>exit_to_user_mode_loop (20,202,020 samples, 0.03%)</title><rect x="1025.6" y="341" width="0.4" height="15.0" fill="rgb(211,157,37)" rx="2" ry="2" />
+<text  x="1028.63" y="351.5" ></text>
+</g>
+<g >
+<title>std::allocator_traits&lt;std::allocator&lt;std::__detail::_Hash_node&lt;std::pair&lt;void* const, Reclaimer::ReclaimNode*&gt;, false&gt; &gt; &gt;::construct&lt;std::pair&lt;void* const, Reclaimer::ReclaimNode*&gt;, std::pair&lt;void*, Reclaimer::ReclaimNode*&gt; &gt; (10,101,010 samples, 0.02%)</title><rect x="33.8" y="309" width="0.2" height="15.0" fill="rgb(245,176,9)" rx="2" ry="2" />
+<text  x="36.77" y="319.5" ></text>
+</g>
+<g >
+<title>std::__invoke&lt;void  (58,848,484,260 samples, 99.45%)</title><rect x="14.4" y="517" width="1173.6" height="15.0" fill="rgb(250,100,9)" rx="2" ry="2" />
+<text  x="17.43" y="527.5" >std::__invoke&lt;void </text>
+</g>
+<g >
+<title>std::_Hashtable&lt;void*, void*, std::allocator&lt;void*&gt;, std::__detail::_Identity, std::equal_to&lt;void*&gt;, std::hash&lt;void*&gt;, std::__detail::_Mod_range_hashing, std::__detail::_Default_ranged_hash, std::__detail::_Prime_rehash_policy, std::__detail::_Hashtable_traits&lt;false, true, true&gt; &gt;::_M_find_node (10,101,010 samples, 0.02%)</title><rect x="17.3" y="373" width="0.2" height="15.0" fill="rgb(221,41,30)" rx="2" ry="2" />
+<text  x="20.25" y="383.5" ></text>
+</g>
+<g >
+<title>std::vector&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, std::allocator&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt; &gt;::operator[] (20,202,020 samples, 0.03%)</title><rect x="1185.8" y="453" width="0.4" height="15.0" fill="rgb(220,89,26)" rx="2" ry="2" />
+<text  x="1188.77" y="463.5" ></text>
+</g>
+<g >
+<title>std::_Hashtable&lt;void*, void*, std::allocator&lt;void*&gt;, std::__detail::_Identity, std::equal_to&lt;void*&gt;, std::hash&lt;void*&gt;, std::__detail::_Mod_range_hashing, std::__detail::_Default_ranged_hash, std::__detail::_Prime_rehash_policy, std::__detail::_Hashtable_traits&lt;false, true, true&gt; &gt;::_M_deallocate_buckets (10,101,010 samples, 0.02%)</title><rect x="37.6" y="357" width="0.2" height="15.0" fill="rgb(238,197,38)" rx="2" ry="2" />
+<text  x="40.60" y="367.5" ></text>
+</g>
+<g >
+<title>std::__detail::_Hash_code_base&lt;void*, void*, std::__detail::_Identity, std::hash&lt;void*&gt;, std::__detail::_Mod_range_hashing, std::__detail::_Default_ranged_hash, false&gt;::_M_bucket_index (10,101,010 samples, 0.02%)</title><rect x="17.1" y="357" width="0.2" height="15.0" fill="rgb(225,111,48)" rx="2" ry="2" />
+<text  x="20.05" y="367.5" ></text>
+</g>
+<g >
+<title>HazardPointer::UnMark (10,101,010 samples, 0.02%)</title><rect x="29.9" y="405" width="0.2" height="15.0" fill="rgb(223,7,28)" rx="2" ry="2" />
+<text  x="32.94" y="415.5" ></text>
+</g>
+<g >
+<title>asm_sysvec_reschedule_ipi (20,202,020 samples, 0.03%)</title><rect x="1025.6" y="421" width="0.4" height="15.0" fill="rgb(220,138,34)" rx="2" ry="2" />
+<text  x="1028.63" y="431.5" ></text>
+</g>
+<g >
+<title>double_link_list&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;::remove_node (80,808,080 samples, 0.14%)</title><rect x="41.4" y="421" width="1.6" height="15.0" fill="rgb(229,182,53)" rx="2" ry="2" />
+<text  x="44.42" y="431.5" ></text>
+</g>
+<g >
+<title>ip_local_deliver (10,101,010 samples, 0.02%)</title><rect x="1024.6" y="197" width="0.2" height="15.0" fill="rgb(237,32,49)" rx="2" ry="2" />
+<text  x="1027.62" y="207.5" ></text>
+</g>
+<g >
+<title>std::mersenne_twister_engine&lt;unsigned long, 32ul, 624ul, 397ul, 31ul, 2567483615ul, 11ul, 4294967295ul, 7ul, 2636928640ul, 15ul, 4022730752ul, 18ul, 1812433253ul&gt;::_M_gen_rand (70,707,070 samples, 0.12%)</title><rect x="1161.6" y="357" width="1.4" height="15.0" fill="rgb(220,215,30)" rx="2" ry="2" />
+<text  x="1164.60" y="367.5" ></text>
+</g>
+<g >
+<title>std::atomic&lt;void*&gt;::load (10,101,010 samples, 0.02%)</title><rect x="24.1" y="389" width="0.2" height="15.0" fill="rgb(210,205,24)" rx="2" ry="2" />
+<text  x="27.10" y="399.5" ></text>
+</g>
+<g >
+<title>LockFreeHashTable&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, double_link_list&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;::Node*, std::hash&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt; &gt;::DeleteNode (393,939,390 samples, 0.67%)</title><rect x="31.2" y="421" width="7.8" height="15.0" fill="rgb(221,33,28)" rx="2" ry="2" />
+<text  x="34.15" y="431.5" ></text>
+</g>
+<g >
+<title>LockFreeHashTable&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, double_link_list&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;::Node*, std::hash&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt; &gt;::Node::Reverse (10,101,010 samples, 0.02%)</title><rect x="20.3" y="389" width="0.2" height="15.0" fill="rgb(220,66,3)" rx="2" ry="2" />
+<text  x="23.27" y="399.5" ></text>
+</g>
+<g >
+<title>Reclaimer::MarkHazard (10,101,010 samples, 0.02%)</title><rect x="19.3" y="389" width="0.2" height="15.0" fill="rgb(237,212,28)" rx="2" ry="2" />
+<text  x="22.27" y="399.5" ></text>
+</g>
+<g >
+<title>schedule (10,101,010 samples, 0.02%)</title><rect x="1025.8" y="325" width="0.2" height="15.0" fill="rgb(231,194,10)" rx="2" ry="2" />
+<text  x="1028.83" y="335.5" ></text>
+</g>
+<g >
+<title>LockFreeHashTable&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, double_link_list&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;::Node*, std::hash&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt; &gt;::Node::Node (10,101,010 samples, 0.02%)</title><rect x="40.2" y="405" width="0.2" height="15.0" fill="rgb(238,154,23)" rx="2" ry="2" />
+<text  x="43.22" y="415.5" ></text>
+</g>
+<g >
+<title>std::__detail::_Hashtable_base&lt;void*, std::pair&lt;void* const, Reclaimer::ReclaimNode*&gt;, std::__detail::_Select1st, std::equal_to&lt;void*&gt;, std::hash&lt;void*&gt;, std::__detail::_Mod_range_hashing, std::__detail::_Default_ranged_hash, std::__detail::_Hashtable_traits&lt;false, false, true&gt; &gt;::_M_equals (10,101,010 samples, 0.02%)</title><rect x="33.4" y="309" width="0.2" height="15.0" fill="rgb(237,61,36)" rx="2" ry="2" />
+<text  x="36.37" y="319.5" ></text>
+</g>
+<g >
+<title>LockFreeHashTable&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, double_link_list&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;::Node*, std::hash&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt; &gt;::Less (20,202,020 samples, 0.03%)</title><rect x="24.5" y="389" width="0.4" height="15.0" fill="rgb(247,141,4)" rx="2" ry="2" />
+<text  x="27.50" y="399.5" ></text>
+</g>
+<g >
+<title>std::mersenne_twister_engine&lt;unsigned long, 32ul, 624ul, 397ul, 31ul, 2567483615ul, 11ul, 4294967295ul, 7ul, 2636928640ul, 15ul, 4022730752ul, 18ul, 1812433253ul&gt;::operator (40,404,040 samples, 0.07%)</title><rect x="1187.2" y="405" width="0.8" height="15.0" fill="rgb(213,32,24)" rx="2" ry="2" />
+<text  x="1190.18" y="415.5" ></text>
+</g>
+<g >
+<title>std::shared_mutex::try_lock (10,101,010 samples, 0.02%)</title><rect x="46.1" y="405" width="0.2" height="15.0" fill="rgb(214,197,31)" rx="2" ry="2" />
+<text  x="49.06" y="415.5" ></text>
+</g>
+<g >
+<title>std::__addressof&lt;std::shared_mutex&gt; (10,101,010 samples, 0.02%)</title><rect x="44.0" y="389" width="0.2" height="15.0" fill="rgb(224,202,25)" rx="2" ry="2" />
+<text  x="47.04" y="399.5" ></text>
+</g>
+<g >
+<title>std::atomic&lt;LockFreeHashTable&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, double_link_list&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;::Node*, std::hash&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt; &gt;::Node*&gt;::load (10,101,010 samples, 0.02%)</title><rect x="21.7" y="389" width="0.2" height="15.0" fill="rgb(243,82,46)" rx="2" ry="2" />
+<text  x="24.68" y="399.5" ></text>
+</g>
+<g >
+<title>std::_Hashtable&lt;void*, std::pair&lt;void* const, Reclaimer::ReclaimNode*&gt;, std::allocator&lt;std::pair&lt;void* const, Reclaimer::ReclaimNode*&gt; &gt;, std::__detail::_Select1st, std::equal_to&lt;void*&gt;, std::hash&lt;void*&gt;, std::__detail::_Mod_range_hashing, std::__detail::_Default_ranged_hash, std::__detail::_Prime_rehash_policy, std::__detail::_Hashtable_traits&lt;false, false, true&gt; &gt;::_Scoped_node::_Scoped_node&lt;std::pair&lt;void*, Reclaimer::ReclaimNode*&gt; &gt; (10,101,010 samples, 0.02%)</title><rect x="33.8" y="341" width="0.2" height="15.0" fill="rgb(248,152,54)" rx="2" ry="2" />
+<text  x="36.77" y="351.5" ></text>
+</g>
+<g >
+<title>LockFreeHashTable&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, double_link_list&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;::Node*, std::hash&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt; &gt;::Node::get_next (10,101,010 samples, 0.02%)</title><rect x="30.3" y="405" width="0.2" height="15.0" fill="rgb(219,195,45)" rx="2" ry="2" />
+<text  x="33.34" y="415.5" ></text>
+</g>
+<g >
+<title>irq_exit_rcu (10,101,010 samples, 0.02%)</title><rect x="1161.4" y="325" width="0.2" height="15.0" fill="rgb(238,202,29)" rx="2" ry="2" />
+<text  x="1164.40" y="335.5" ></text>
+</g>
+<g >
+<title>__napi_poll (10,101,010 samples, 0.02%)</title><rect x="1024.6" y="325" width="0.2" height="15.0" fill="rgb(243,145,16)" rx="2" ry="2" />
+<text  x="1027.62" y="335.5" ></text>
+</g>
+<g >
+<title>std::__invoke_impl&lt;void, void  (58,848,484,260 samples, 99.45%)</title><rect x="14.4" y="501" width="1173.6" height="15.0" fill="rgb(220,185,7)" rx="2" ry="2" />
+<text  x="17.43" y="511.5" >std::__invoke_impl&lt;void, void </text>
+</g>
+<g >
+<title>all (59,171,716,580 samples, 100%)</title><rect x="10.0" y="661" width="1180.0" height="15.0" fill="rgb(252,108,29)" rx="2" ry="2" />
+<text  x="13.00" y="671.5" ></text>
+</g>
+<g >
+<title>std::atomic&lt;void*&gt;::store (10,101,010 samples, 0.02%)</title><rect x="14.8" y="373" width="0.2" height="15.0" fill="rgb(207,184,52)" rx="2" ry="2" />
+<text  x="17.83" y="383.5" ></text>
+</g>
+<g >
+<title>std::__detail::_Hashtable_base&lt;void*, void*, std::__detail::_Identity, std::equal_to&lt;void*&gt;, std::hash&lt;void*&gt;, std::__detail::_Mod_range_hashing, std::__detail::_Default_ranged_hash, std::__detail::_Hashtable_traits&lt;false, true, true&gt; &gt;::_M_eq (10,101,010 samples, 0.02%)</title><rect x="17.3" y="325" width="0.2" height="15.0" fill="rgb(244,26,26)" rx="2" ry="2" />
+<text  x="20.25" y="335.5" ></text>
+</g>
+<g >
+<title>tcp_data_queue (10,101,010 samples, 0.02%)</title><rect x="1024.6" y="101" width="0.2" height="15.0" fill="rgb(252,4,38)" rx="2" ry="2" />
+<text  x="1027.62" y="111.5" ></text>
+</g>
+<g >
+<title>LockFreeHashTable&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, double_link_list&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;::Node*, std::hash&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt; &gt;::GetBucketHeadByHash (10,101,010 samples, 0.02%)</title><rect x="20.9" y="437" width="0.2" height="15.0" fill="rgb(227,127,44)" rx="2" ry="2" />
+<text  x="23.88" y="447.5" ></text>
+</g>
+<g >
+<title>std::__shared_mutex_pthread::unlock (20,202,020 samples, 0.03%)</title><rect x="47.9" y="373" width="0.4" height="15.0" fill="rgb(242,43,17)" rx="2" ry="2" />
+<text  x="50.87" y="383.5" ></text>
+</g>
+<g >
+<title>double_link_list&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;::insert_node_to_top (40,404,040 samples, 0.07%)</title><rect x="45.5" y="437" width="0.8" height="15.0" fill="rgb(218,181,32)" rx="2" ry="2" />
+<text  x="48.45" y="447.5" ></text>
+</g>
+<g >
+<title>[libstdc++.so.6.0.29] (10,101,010 samples, 0.02%)</title><rect x="35.0" y="309" width="0.2" height="15.0" fill="rgb(251,8,4)" rx="2" ry="2" />
+<text  x="37.98" y="319.5" ></text>
+</g>
+<g >
+<title>LockFreeHashTable&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, double_link_list&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;::Node*, std::hash&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt; &gt;::SearchNode (30,303,030 samples, 0.05%)</title><rect x="19.3" y="421" width="0.6" height="15.0" fill="rgb(217,13,33)" rx="2" ry="2" />
+<text  x="22.27" y="431.5" ></text>
+</g>
+<g >
+<title>std::__detail::_Insert_base&lt;void*, void*, std::allocator&lt;void*&gt;, std::__detail::_Identity, std::equal_to&lt;void*&gt;, std::hash&lt;void*&gt;, std::__detail::_Mod_range_hashing, std::__detail::_Default_ranged_hash, std::__detail::_Prime_rehash_policy, std::__detail::_Hashtable_traits&lt;false, true, true&gt; &gt;::insert (50,505,050 samples, 0.09%)</title><rect x="36.6" y="373" width="1.0" height="15.0" fill="rgb(220,93,8)" rx="2" ry="2" />
+<text  x="39.59" y="383.5" ></text>
+</g>
+<g >
+<title>std::__detail::_AllocNode&lt;std::allocator&lt;std::__detail::_Hash_node&lt;void*, false&gt; &gt; &gt;::operator (20,202,020 samples, 0.03%)</title><rect x="37.0" y="341" width="0.4" height="15.0" fill="rgb(221,47,4)" rx="2" ry="2" />
+<text  x="39.99" y="351.5" ></text>
+</g>
+<g >
+<title>std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;::basic_string (10,101,010 samples, 0.02%)</title><rect x="30.7" y="437" width="0.2" height="15.0" fill="rgb(242,225,50)" rx="2" ry="2" />
+<text  x="33.75" y="447.5" ></text>
+</g>
+<g >
+<title>std::_Function_handler&lt;void  (10,101,010 samples, 0.02%)</title><rect x="32.6" y="341" width="0.2" height="15.0" fill="rgb(225,121,14)" rx="2" ry="2" />
+<text  x="35.56" y="351.5" ></text>
+</g>
+<g >
+<title>pthread_rwlock_trywrlock (20,202,020 samples, 0.03%)</title><rect x="42.2" y="357" width="0.4" height="15.0" fill="rgb(231,168,16)" rx="2" ry="2" />
+<text  x="45.23" y="367.5" ></text>
+</g>
+<g >
+<title>std::unordered_map&lt;void*, Reclaimer::ReclaimNode*, std::hash&lt;void*&gt;, std::equal_to&lt;void*&gt;, std::allocator&lt;std::pair&lt;void* const, Reclaimer::ReclaimNode*&gt; &gt; &gt;::size (10,101,010 samples, 0.02%)</title><rect x="36.4" y="389" width="0.2" height="15.0" fill="rgb(254,207,31)" rx="2" ry="2" />
+<text  x="39.39" y="399.5" ></text>
+</g>
+<g >
+<title>std::allocator_traits&lt;std::allocator&lt;std::__detail::_Hash_node&lt;void*, false&gt; &gt; &gt;::construct&lt;void*, void* const&amp;&gt; (10,101,010 samples, 0.02%)</title><rect x="37.2" y="309" width="0.2" height="15.0" fill="rgb(205,34,0)" rx="2" ry="2" />
+<text  x="40.19" y="319.5" ></text>
+</g>
+<g >
+<title>LockFreeHashTable&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, double_link_list&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;::Node*, std::hash&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt; &gt;::Node::RegularKey (10,101,010 samples, 0.02%)</title><rect x="40.4" y="405" width="0.2" height="15.0" fill="rgb(241,63,13)" rx="2" ry="2" />
+<text  x="43.42" y="415.5" ></text>
+</g>
+<g >
+<title>std::__detail::_Hash_code_base&lt;void*, std::pair&lt;void* const, Reclaimer::ReclaimNode*&gt;, std::__detail::_Select1st, std::hash&lt;void*&gt;, std::__detail::_Mod_range_hashing, std::__detail::_Default_ranged_hash, false&gt;::_M_hash_code (10,101,010 samples, 0.02%)</title><rect x="36.0" y="309" width="0.2" height="15.0" fill="rgb(254,218,24)" rx="2" ry="2" />
+<text  x="38.98" y="319.5" ></text>
+</g>
+<g >
+<title>sysvec_reschedule_ipi (20,202,020 samples, 0.03%)</title><rect x="1025.6" y="405" width="0.4" height="15.0" fill="rgb(221,53,35)" rx="2" ry="2" />
+<text  x="1028.63" y="415.5" ></text>
+</g>
+<g >
+<title>sysvec_hyperv_stimer0 (40,404,040 samples, 0.07%)</title><rect x="1024.8" y="405" width="0.8" height="15.0" fill="rgb(240,210,17)" rx="2" ry="2" />
+<text  x="1027.82" y="415.5" ></text>
+</g>
+<g >
+<title>std::__detail::_Hashtable_alloc&lt;std::allocator&lt;std::__detail::_Hash_node&lt;std::pair&lt;void* const, Reclaimer::ReclaimNode*&gt;, false&gt; &gt; &gt;::_M_allocate_node&lt;std::pair&lt;void*, Reclaimer::ReclaimNode*&gt; &gt; (10,101,010 samples, 0.02%)</title><rect x="33.8" y="325" width="0.2" height="15.0" fill="rgb(229,173,46)" rx="2" ry="2" />
+<text  x="36.77" y="335.5" ></text>
+</g>
+<g >
+<title>LockFreeHashTable&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, double_link_list&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;::Node*, std::hash&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt; &gt;::RegularNode::~RegularNode (10,101,010 samples, 0.02%)</title><rect x="20.7" y="437" width="0.2" height="15.0" fill="rgb(224,193,30)" rx="2" ry="2" />
+<text  x="23.68" y="447.5" ></text>
+</g>
+<g >
+<title>__irq_exit_rcu (10,101,010 samples, 0.02%)</title><rect x="1161.4" y="309" width="0.2" height="15.0" fill="rgb(252,219,24)" rx="2" ry="2" />
+<text  x="1164.40" y="319.5" ></text>
+</g>
+<g >
+<title>std::unique_lock&lt;std::shared_mutex&gt;::unique_lock (60,606,060 samples, 0.10%)</title><rect x="43.8" y="405" width="1.2" height="15.0" fill="rgb(218,27,30)" rx="2" ry="2" />
+<text  x="46.84" y="415.5" ></text>
+</g>
+<g >
+<title>std::generate_canonical&lt;double, 53ul, std::mersenne_twister_engine&lt;unsigned long, 32ul, 624ul, 397ul, 31ul, 2567483615ul, 11ul, 4294967295ul, 7ul, 2636928640ul, 15ul, 4022730752ul, 18ul, 1812433253ul&gt; &gt; (50,505,050 samples, 0.09%)</title><rect x="1187.0" y="421" width="1.0" height="15.0" fill="rgb(239,57,33)" rx="2" ry="2" />
+<text  x="1189.98" y="431.5" ></text>
+</g>
+<g >
+<title>call_timer_fn (10,101,010 samples, 0.02%)</title><rect x="1025.4" y="309" width="0.2" height="15.0" fill="rgb(253,190,42)" rx="2" ry="2" />
+<text  x="1028.43" y="319.5" ></text>
+</g>
+<g >
+<title>LockFreeHashTable&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, double_link_list&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;::Node*, std::hash&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt; &gt;::Less (10,101,010 samples, 0.02%)</title><rect x="21.5" y="389" width="0.2" height="15.0" fill="rgb(236,59,37)" rx="2" ry="2" />
+<text  x="24.48" y="399.5" ></text>
+</g>
+<g >
+<title>std::function&lt;void  (20,202,020 samples, 0.03%)</title><rect x="15.6" y="405" width="0.4" height="15.0" fill="rgb(233,33,51)" rx="2" ry="2" />
+<text  x="18.64" y="415.5" ></text>
+</g>
+<g >
+<title>LockFreeHashTable&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, double_link_list&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;::Node*, std::hash&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt; &gt;::Equals (10,101,010 samples, 0.02%)</title><rect x="24.3" y="405" width="0.2" height="15.0" fill="rgb(233,99,3)" rx="2" ry="2" />
+<text  x="27.30" y="415.5" ></text>
+</g>
+<g >
+<title>run_rebalance_domains (10,101,010 samples, 0.02%)</title><rect x="1120.9" y="341" width="0.2" height="15.0" fill="rgb(218,219,36)" rx="2" ry="2" />
+<text  x="1123.91" y="351.5" ></text>
+</g>
+<g >
+<title>std::__glibcxx_rwlock_unlock (10,101,010 samples, 0.02%)</title><rect x="42.8" y="341" width="0.2" height="15.0" fill="rgb(253,80,32)" rx="2" ry="2" />
+<text  x="45.83" y="351.5" ></text>
+</g>
+<g >
+<title>pthread_rwlock_tryrdlock (10,101,010 samples, 0.02%)</title><rect x="41.8" y="357" width="0.2" height="15.0" fill="rgb(245,127,12)" rx="2" ry="2" />
+<text  x="44.83" y="367.5" ></text>
+</g>
+<g >
+<title>Reclaimer::ReclaimLater (111,111,110 samples, 0.19%)</title><rect x="32.2" y="405" width="2.2" height="15.0" fill="rgb(230,9,54)" rx="2" ry="2" />
+<text  x="35.16" y="415.5" ></text>
+</g>
+<g >
+<title>std::_Hashtable&lt;void*, void*, std::allocator&lt;void*&gt;, std::__detail::_Identity, std::equal_to&lt;void*&gt;, std::hash&lt;void*&gt;, std::__detail::_Mod_range_hashing, std::__detail::_Default_ranged_hash, std::__detail::_Prime_rehash_policy, std::__detail::_Hashtable_traits&lt;false, true, true&gt; &gt;::_M_bucket_index (10,101,010 samples, 0.02%)</title><rect x="17.1" y="373" width="0.2" height="15.0" fill="rgb(239,203,20)" rx="2" ry="2" />
+<text  x="20.05" y="383.5" ></text>
+</g>
+<g >
+<title>asm_sysvec_hyperv_callback (10,101,010 samples, 0.02%)</title><rect x="1024.6" y="421" width="0.2" height="15.0" fill="rgb(213,171,10)" rx="2" ry="2" />
+<text  x="1027.62" y="431.5" ></text>
+</g>
+<g >
+<title>std::__glibcxx_rwlock_unlock (10,101,010 samples, 0.02%)</title><rect x="48.1" y="357" width="0.2" height="15.0" fill="rgb(220,0,27)" rx="2" ry="2" />
+<text  x="51.07" y="367.5" ></text>
+</g>
+<g >
+<title>std::atomic&lt;double_link_list&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;::Node**&gt;::atomic (10,101,010 samples, 0.02%)</title><rect x="19.1" y="437" width="0.2" height="15.0" fill="rgb(219,173,3)" rx="2" ry="2" />
+<text  x="22.06" y="447.5" ></text>
+</g>
+<g >
+<title>std::__detail::_Hash_code_base&lt;void*, std::pair&lt;void* const, Reclaimer::ReclaimNode*&gt;, std::__detail::_Select1st, std::hash&lt;void*&gt;, std::__detail::_Mod_range_hashing, std::__detail::_Default_ranged_hash, false&gt;::_M_hash_code (10,101,010 samples, 0.02%)</title><rect x="33.6" y="277" width="0.2" height="15.0" fill="rgb(252,70,28)" rx="2" ry="2" />
+<text  x="36.57" y="287.5" ></text>
+</g>
+<g >
+<title>std::_Hashtable&lt;void*, std::pair&lt;void* const, Reclaimer::ReclaimNode*&gt;, std::allocator&lt;std::pair&lt;void* const, Reclaimer::ReclaimNode*&gt; &gt;, std::__detail::_Select1st, std::equal_to&lt;void*&gt;, std::hash&lt;void*&gt;, std::__detail::_Mod_range_hashing, std::__detail::_Default_ranged_hash, std::__detail::_Prime_rehash_policy, std::__detail::_Hashtable_traits&lt;false, false, true&gt; &gt;::_M_bucket_index (10,101,010 samples, 0.02%)</title><rect x="16.0" y="325" width="0.2" height="15.0" fill="rgb(206,34,6)" rx="2" ry="2" />
+<text  x="19.04" y="335.5" ></text>
+</g>
+<g >
+<title>_int_free (10,101,010 samples, 0.02%)</title><rect x="37.6" y="293" width="0.2" height="15.0" fill="rgb(225,112,18)" rx="2" ry="2" />
+<text  x="40.60" y="303.5" ></text>
+</g>
+<g >
+<title>sock_def_readable (10,101,010 samples, 0.02%)</title><rect x="1024.6" y="69" width="0.2" height="15.0" fill="rgb(250,73,49)" rx="2" ry="2" />
+<text  x="1027.62" y="79.5" ></text>
+</g>
+<g >
+<title>HazardPointer::HazardPointer (20,202,020 samples, 0.03%)</title><rect x="23.9" y="405" width="0.4" height="15.0" fill="rgb(209,87,2)" rx="2" ry="2" />
+<text  x="26.90" y="415.5" ></text>
+</g>
+<g >
+<title>LockFreeHashTable&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, double_link_list&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;::Node*, std::hash&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt; &gt;::RegularNode::RegularNode (40,404,040 samples, 0.07%)</title><rect x="40.0" y="421" width="0.8" height="15.0" fill="rgb(229,210,30)" rx="2" ry="2" />
+<text  x="43.01" y="431.5" ></text>
+</g>
+<g >
+<title>std::__detail::_Adaptor&lt;std::mersenne_twister_engine&lt;unsigned long, 32ul, 624ul, 397ul, 31ul, 2567483615ul, 11ul, 4294967295ul, 7ul, 2636928640ul, 15ul, 4022730752ul, 18ul, 1812433253ul&gt;, double&gt;::operator (50,505,050 samples, 0.09%)</title><rect x="1187.0" y="437" width="1.0" height="15.0" fill="rgb(221,153,43)" rx="2" ry="2" />
+<text  x="1189.98" y="447.5" ></text>
+</g>
+<g >
+<title>std::atomic&lt;LockFreeHashTable&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, double_link_list&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;::Node*, std::hash&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt; &gt;::Node*&gt;::compare_exchange_weak (10,101,010 samples, 0.02%)</title><rect x="30.5" y="421" width="0.2" height="15.0" fill="rgb(215,7,41)" rx="2" ry="2" />
+<text  x="33.55" y="431.5" ></text>
+</g>
+<g >
+<title>LockFreeHashTable&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, double_link_list&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;::Node*, std::hash&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt; &gt;::Insert (151,515,150 samples, 0.26%)</title><rect x="27.9" y="453" width="3.0" height="15.0" fill="rgb(247,171,52)" rx="2" ry="2" />
+<text  x="30.93" y="463.5" ></text>
+</g>
+<g >
+<title>std::_Hashtable&lt;void*, std::pair&lt;void* const, Reclaimer::ReclaimNode*&gt;, std::allocator&lt;std::pair&lt;void* const, Reclaimer::ReclaimNode*&gt; &gt;, std::__detail::_Select1st, std::equal_to&lt;void*&gt;, std::hash&lt;void*&gt;, std::__detail::_Mod_range_hashing, std::__detail::_Default_ranged_hash, std::__detail::_Prime_rehash_policy, std::__detail::_Hashtable_traits&lt;false, false, true&gt; &gt;::_M_bucket_index (10,101,010 samples, 0.02%)</title><rect x="33.6" y="309" width="0.2" height="15.0" fill="rgb(244,17,46)" rx="2" ry="2" />
+<text  x="36.57" y="319.5" ></text>
+</g>
+<g >
+<title>__netif_receive_skb_list_core (10,101,010 samples, 0.02%)</title><rect x="1024.6" y="261" width="0.2" height="15.0" fill="rgb(224,93,46)" rx="2" ry="2" />
+<text  x="1027.62" y="271.5" ></text>
+</g>
+<g >
+<title>std::__shared_mutex_pthread::try_lock (10,101,010 samples, 0.02%)</title><rect x="46.1" y="389" width="0.2" height="15.0" fill="rgb(223,2,30)" rx="2" ry="2" />
+<text  x="49.06" y="399.5" ></text>
+</g>
+<g >
+<title>LockFreeHashTable&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, double_link_list&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;::Node*, std::hash&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt; &gt;::RegularNode::RegularNode (20,202,020 samples, 0.03%)</title><rect x="27.1" y="437" width="0.4" height="15.0" fill="rgb(209,190,7)" rx="2" ry="2" />
+<text  x="30.12" y="447.5" ></text>
+</g>
+<g >
+<title>std::_Hashtable&lt;void*, std::pair&lt;void* const, Reclaimer::ReclaimNode*&gt;, std::allocator&lt;std::pair&lt;void* const, Reclaimer::ReclaimNode*&gt; &gt;, std::__detail::_Select1st, std::equal_to&lt;void*&gt;, std::hash&lt;void*&gt;, std::__detail::_Mod_range_hashing, std::__detail::_Default_ranged_hash, std::__detail::_Prime_rehash_policy, std::__detail::_Hashtable_traits&lt;false, false, true&gt; &gt;::_M_erase (20,202,020 samples, 0.03%)</title><rect x="36.0" y="341" width="0.4" height="15.0" fill="rgb(242,62,22)" rx="2" ry="2" />
+<text  x="38.98" y="351.5" ></text>
+</g>
+<g >
+<title>std::__detail::_Hashtable_alloc&lt;std::allocator&lt;std::__detail::_Hash_node&lt;void*, false&gt; &gt; &gt;::_M_deallocate_nodes (10,101,010 samples, 0.02%)</title><rect x="37.8" y="341" width="0.2" height="15.0" fill="rgb(225,179,52)" rx="2" ry="2" />
+<text  x="40.80" y="351.5" ></text>
+</g>
+<g >
+<title>std::pow&lt;int, double&gt; (1,898,989,880 samples, 3.21%)</title><rect x="1121.1" y="437" width="37.9" height="15.0" fill="rgb(254,214,23)" rx="2" ry="2" />
+<text  x="1124.11" y="447.5" >std..</text>
+</g>
+<g >
+<title>run_rebalance_domains (10,101,010 samples, 0.02%)</title><rect x="1025.2" y="341" width="0.2" height="15.0" fill="rgb(253,36,5)" rx="2" ry="2" />
+<text  x="1028.23" y="351.5" ></text>
+</g>
+<g >
+<title>std::unordered_set&lt;void*, std::hash&lt;void*&gt;, std::equal_to&lt;void*&gt;, std::allocator&lt;void*&gt; &gt;::find (30,303,030 samples, 0.05%)</title><rect x="16.8" y="405" width="0.7" height="15.0" fill="rgb(223,0,39)" rx="2" ry="2" />
+<text  x="19.85" y="415.5" ></text>
+</g>
+<g >
+<title>std::allocator_traits&lt;std::allocator&lt;std::__detail::_Hash_node&lt;void*, false&gt; &gt; &gt;::deallocate (10,101,010 samples, 0.02%)</title><rect x="37.8" y="293" width="0.2" height="15.0" fill="rgb(233,156,46)" rx="2" ry="2" />
+<text  x="40.80" y="303.5" ></text>
+</g>
+<g >
+<title>std::_Hashtable&lt;void*, void*, std::allocator&lt;void*&gt;, std::__detail::_Identity, std::equal_to&lt;void*&gt;, std::hash&lt;void*&gt;, std::__detail::_Mod_range_hashing, std::__detail::_Default_ranged_hash, std::__detail::_Prime_rehash_policy, std::__detail::_Hashtable_traits&lt;false, true, true&gt; &gt;::_M_deallocate_buckets (10,101,010 samples, 0.02%)</title><rect x="17.7" y="309" width="0.2" height="15.0" fill="rgb(224,68,0)" rx="2" ry="2" />
+<text  x="20.65" y="319.5" ></text>
+</g>
+<g >
+<title>LockFreeHashTable&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, double_link_list&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;::Node*, std::hash&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt; &gt;::Segment::get_sub_segments (20,202,020 samples, 0.03%)</title><rect x="25.9" y="405" width="0.4" height="15.0" fill="rgb(253,49,39)" rx="2" ry="2" />
+<text  x="28.91" y="415.5" ></text>
+</g>
+<g >
+<title>Reclaimer::ReclaimNoHazardPointer (101,010,100 samples, 0.17%)</title><rect x="16.2" y="421" width="2.1" height="15.0" fill="rgb(206,107,30)" rx="2" ry="2" />
+<text  x="19.24" y="431.5" ></text>
+</g>
+<g >
+<title>std::move&lt;HazardPointer&amp;&gt; (10,101,010 samples, 0.02%)</title><rect x="25.1" y="421" width="0.2" height="15.0" fill="rgb(211,112,18)" rx="2" ry="2" />
+<text  x="28.11" y="431.5" ></text>
+</g>
+<g >
+<title>std::unique_lock&lt;std::shared_mutex&gt;::unlock (20,202,020 samples, 0.03%)</title><rect x="47.9" y="405" width="0.4" height="15.0" fill="rgb(236,96,13)" rx="2" ry="2" />
+<text  x="50.87" y="415.5" ></text>
+</g>
+<g >
+<title>std::pow&lt;int, double&gt; (1,121,212,110 samples, 1.89%)</title><rect x="1163.4" y="453" width="22.4" height="15.0" fill="rgb(220,165,51)" rx="2" ry="2" />
+<text  x="1166.41" y="463.5" >s..</text>
+</g>
+<g >
+<title>std::uniform_real_distribution&lt;double&gt;::operator (50,505,050 samples, 0.09%)</title><rect x="1187.0" y="453" width="1.0" height="15.0" fill="rgb(244,191,22)" rx="2" ry="2" />
+<text  x="1189.98" y="463.5" ></text>
+</g>
+<g >
+<title>std::__shared_mutex_pthread::try_lock (40,404,040 samples, 0.07%)</title><rect x="44.2" y="373" width="0.8" height="15.0" fill="rgb(232,195,4)" rx="2" ry="2" />
+<text  x="47.24" y="383.5" ></text>
+</g>
+<g >
+<title>std::unordered_map&lt;void*, Reclaimer::ReclaimNode*, std::hash&lt;void*&gt;, std::equal_to&lt;void*&gt;, std::allocator&lt;std::pair&lt;void* const, Reclaimer::ReclaimNode*&gt; &gt; &gt;::insert&lt;std::pair&lt;void*, Reclaimer::ReclaimNode*&gt; &gt; (10,101,010 samples, 0.02%)</title><rect x="16.0" y="405" width="0.2" height="15.0" fill="rgb(231,156,45)" rx="2" ry="2" />
+<text  x="19.04" y="415.5" ></text>
+</g>
+<g >
+<title>std::allocator_traits&lt;std::allocator&lt;std::__detail::_Hash_node&lt;void*, false&gt; &gt; &gt;::allocate (10,101,010 samples, 0.02%)</title><rect x="37.0" y="309" width="0.2" height="15.0" fill="rgb(227,120,48)" rx="2" ry="2" />
+<text  x="39.99" y="319.5" ></text>
+</g>
+<g >
+<title>std::_Hashtable&lt;void*, std::pair&lt;void* const, Reclaimer::ReclaimNode*&gt;, std::allocator&lt;std::pair&lt;void* const, Reclaimer::ReclaimNode*&gt; &gt;, std::__detail::_Select1st, std::equal_to&lt;void*&gt;, std::hash&lt;void*&gt;, std::__detail::_Mod_range_hashing, std::__detail::_Default_ranged_hash, std::__detail::_Prime_rehash_policy, std::__detail::_Hashtable_traits&lt;false, false, true&gt; &gt;::_M_insert_bucket_begin (10,101,010 samples, 0.02%)</title><rect x="33.6" y="325" width="0.2" height="15.0" fill="rgb(229,69,22)" rx="2" ry="2" />
+<text  x="36.57" y="335.5" ></text>
+</g>
+<g >
+<title>std::_Hash_bytes (10,101,010 samples, 0.02%)</title><rect x="40.6" y="389" width="0.2" height="15.0" fill="rgb(210,43,2)" rx="2" ry="2" />
+<text  x="43.62" y="399.5" ></text>
+</g>
+<g >
+<title>LRUCache&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, LockFreeHashTable&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, double_link_list&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;::Node*, std::hash&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt; &gt;, operate_list&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;, double_link_list&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;::Node&gt;::get (393,939,390 samples, 0.67%)</title><rect x="14.4" y="469" width="7.9" height="15.0" fill="rgb(240,62,50)" rx="2" ry="2" />
+<text  x="17.43" y="479.5" ></text>
+</g>
+<g >
+<title>LockFreeHashTable&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, double_link_list&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;::Node*, std::hash&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt; &gt;::FindNode (30,303,030 samples, 0.05%)</title><rect x="19.3" y="437" width="0.6" height="15.0" fill="rgb(209,186,24)" rx="2" ry="2" />
+<text  x="22.27" y="447.5" ></text>
+</g>
+<g >
+<title>std::_Hashtable&lt;void*, void*, std::allocator&lt;void*&gt;, std::__detail::_Identity, std::equal_to&lt;void*&gt;, std::hash&lt;void*&gt;, std::__detail::_Mod_range_hashing, std::__detail::_Default_ranged_hash, std::__detail::_Prime_rehash_policy, std::__detail::_Hashtable_traits&lt;false, true, true&gt; &gt;::_M_insert_unique_node (10,101,010 samples, 0.02%)</title><rect x="36.8" y="341" width="0.2" height="15.0" fill="rgb(245,1,40)" rx="2" ry="2" />
+<text  x="39.79" y="351.5" ></text>
+</g>
+<g >
+<title>LockFreeHashTable&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, double_link_list&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;::Node*, std::hash&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt; &gt;::RegularNode::~RegularNode (10,101,010 samples, 0.02%)</title><rect x="18.9" y="437" width="0.2" height="15.0" fill="rgb(224,51,43)" rx="2" ry="2" />
+<text  x="21.86" y="447.5" ></text>
+</g>
+<g >
+<title>std::hash&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;::operator (10,101,010 samples, 0.02%)</title><rect x="27.7" y="437" width="0.2" height="15.0" fill="rgb(244,57,2)" rx="2" ry="2" />
+<text  x="30.73" y="447.5" ></text>
+</g>
+<g >
+<title>asm_sysvec_hyperv_stimer0 (40,404,040 samples, 0.07%)</title><rect x="1024.8" y="421" width="0.8" height="15.0" fill="rgb(224,92,1)" rx="2" ry="2" />
+<text  x="1027.82" y="431.5" ></text>
+</g>
+<g >
+<title>std::shared_lock&lt;std::shared_mutex&gt;::unlock (10,101,010 samples, 0.02%)</title><rect x="46.3" y="421" width="0.2" height="15.0" fill="rgb(209,139,40)" rx="2" ry="2" />
+<text  x="49.26" y="431.5" ></text>
+</g>
+<g >
+<title>irq_exit_rcu (10,101,010 samples, 0.02%)</title><rect x="1024.6" y="389" width="0.2" height="15.0" fill="rgb(222,65,31)" rx="2" ry="2" />
+<text  x="1027.62" y="399.5" ></text>
+</g>
+<g >
+<title>std::__detail::_Hash_code_base&lt;void*, std::pair&lt;void* const, Reclaimer::ReclaimNode*&gt;, std::__detail::_Select1st, std::hash&lt;void*&gt;, std::__detail::_Mod_range_hashing, std::__detail::_Default_ranged_hash, false&gt;::_M_bucket_index (10,101,010 samples, 0.02%)</title><rect x="33.6" y="293" width="0.2" height="15.0" fill="rgb(241,172,20)" rx="2" ry="2" />
+<text  x="36.57" y="303.5" ></text>
+</g>
+<g >
+<title>std::__detail::_Hash_code_base&lt;void*, std::pair&lt;void* const, Reclaimer::ReclaimNode*&gt;, std::__detail::_Select1st, std::hash&lt;void*&gt;, std::__detail::_Mod_range_hashing, std::__detail::_Default_ranged_hash, false&gt;::_M_bucket_index (10,101,010 samples, 0.02%)</title><rect x="16.0" y="309" width="0.2" height="15.0" fill="rgb(228,148,2)" rx="2" ry="2" />
+<text  x="19.04" y="319.5" ></text>
+</g>
+<g >
+<title>ip_sublist_rcv (10,101,010 samples, 0.02%)</title><rect x="1024.6" y="229" width="0.2" height="15.0" fill="rgb(241,177,15)" rx="2" ry="2" />
+<text  x="1027.62" y="239.5" ></text>
+</g>
+<g >
+<title>std::function&lt;void  (30,303,030 samples, 0.05%)</title><rect x="32.6" y="373" width="0.6" height="15.0" fill="rgb(239,132,27)" rx="2" ry="2" />
+<text  x="35.56" y="383.5" ></text>
+</g>
+<g >
+<title>std::_Hashtable&lt;void*, void*, std::allocator&lt;void*&gt;, std::__detail::_Identity, std::equal_to&lt;void*&gt;, std::hash&lt;void*&gt;, std::__detail::_Mod_range_hashing, std::__detail::_Default_ranged_hash, std::__detail::_Prime_rehash_policy, std::__detail::_Hashtable_traits&lt;false, true, true&gt; &gt;::clear (10,101,010 samples, 0.02%)</title><rect x="37.8" y="357" width="0.2" height="15.0" fill="rgb(253,109,8)" rx="2" ry="2" />
+<text  x="40.80" y="367.5" ></text>
+</g>
+<g >
+<title>std::uniform_real_distribution&lt;double&gt;::operator (222,222,220 samples, 0.38%)</title><rect x="1159.0" y="421" width="4.4" height="15.0" fill="rgb(224,210,2)" rx="2" ry="2" />
+<text  x="1161.98" y="431.5" ></text>
+</g>
+<g >
+<title>HazardPointer::HazardPointer (10,101,010 samples, 0.02%)</title><rect x="19.3" y="405" width="0.2" height="15.0" fill="rgb(222,192,0)" rx="2" ry="2" />
+<text  x="22.27" y="415.5" ></text>
+</g>
+<g >
+<title>std::__detail::_Insert_base&lt;void*, void*, std::allocator&lt;void*&gt;, std::__detail::_Identity, std::equal_to&lt;void*&gt;, std::hash&lt;void*&gt;, std::__detail::_Mod_range_hashing, std::__detail::_Default_ranged_hash, std::__detail::_Prime_rehash_policy, std::__detail::_Hashtable_traits&lt;false, true, true&gt; &gt;::insert (30,303,030 samples, 0.05%)</title><rect x="17.5" y="389" width="0.6" height="15.0" fill="rgb(254,224,6)" rx="2" ry="2" />
+<text  x="20.45" y="399.5" ></text>
+</g>
+<g >
+<title>tcp_v4_rcv (10,101,010 samples, 0.02%)</title><rect x="1024.6" y="149" width="0.2" height="15.0" fill="rgb(245,48,27)" rx="2" ry="2" />
+<text  x="1027.62" y="159.5" ></text>
+</g>
+<g >
+<title>std::atomic&lt;void*&gt;::load (10,101,010 samples, 0.02%)</title><rect x="18.3" y="405" width="0.2" height="15.0" fill="rgb(208,35,17)" rx="2" ry="2" />
+<text  x="21.26" y="415.5" ></text>
+</g>
+<g >
+<title>std::unordered_set&lt;void*, std::hash&lt;void*&gt;, std::equal_to&lt;void*&gt;, std::allocator&lt;void*&gt; &gt;::~unordered_set (10,101,010 samples, 0.02%)</title><rect x="18.1" y="405" width="0.2" height="15.0" fill="rgb(210,169,48)" rx="2" ry="2" />
+<text  x="21.06" y="415.5" ></text>
+</g>
+<g >
+<title>std::forward&lt;void* const&amp;&gt; (10,101,010 samples, 0.02%)</title><rect x="32.4" y="389" width="0.2" height="15.0" fill="rgb(214,28,47)" rx="2" ry="2" />
+<text  x="35.36" y="399.5" ></text>
+</g>
+<g >
+<title>LockFreeHashTable&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, double_link_list&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;::Node*, std::hash&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt; &gt;::OnDeleteNode (20,202,020 samples, 0.03%)</title><rect x="34.8" y="325" width="0.4" height="15.0" fill="rgb(233,116,26)" rx="2" ry="2" />
+<text  x="37.78" y="335.5" ></text>
+</g>
+<g >
+<title>ip_list_rcv (10,101,010 samples, 0.02%)</title><rect x="1024.6" y="245" width="0.2" height="15.0" fill="rgb(246,219,35)" rx="2" ry="2" />
+<text  x="1027.62" y="255.5" ></text>
+</g>
+<g >
+<title>[unknown] (58,848,484,260 samples, 99.45%)</title><rect x="14.4" y="597" width="1173.6" height="15.0" fill="rgb(206,136,54)" rx="2" ry="2" />
+<text  x="17.43" y="607.5" >[unknown]</text>
+</g>
+<g >
+<title>std::__detail::_Hashtable_alloc&lt;std::allocator&lt;std::__detail::_Hash_node&lt;void*, false&gt; &gt; &gt;::_M_deallocate_node_ptr (10,101,010 samples, 0.02%)</title><rect x="37.8" y="309" width="0.2" height="15.0" fill="rgb(219,79,49)" rx="2" ry="2" />
+<text  x="40.80" y="319.5" ></text>
+</g>
+<g >
+<title>__ieee754_pow_fma (30,303,030 samples, 0.05%)</title><rect x="39.4" y="405" width="0.6" height="15.0" fill="rgb(239,33,5)" rx="2" ry="2" />
+<text  x="42.41" y="415.5" ></text>
+</g>
+<g >
+<title>LockFreeHashTable&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, double_link_list&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;::Node*, std::hash&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt; &gt;::Delete (242,424,240 samples, 0.41%)</title><rect x="14.4" y="453" width="4.9" height="15.0" fill="rgb(247,108,38)" rx="2" ry="2" />
+<text  x="17.43" y="463.5" ></text>
+</g>
+<g >
+<title>std::__detail::_Hashtable_alloc&lt;std::allocator&lt;std::__detail::_Hash_node&lt;void*, false&gt; &gt; &gt;::_M_deallocate_buckets (10,101,010 samples, 0.02%)</title><rect x="37.6" y="325" width="0.2" height="15.0" fill="rgb(213,198,10)" rx="2" ry="2" />
+<text  x="40.60" y="335.5" ></text>
+</g>
+<g >
+<title>HazardPointer::UnMark (10,101,010 samples, 0.02%)</title><rect x="23.1" y="405" width="0.2" height="15.0" fill="rgb(247,63,1)" rx="2" ry="2" />
+<text  x="26.09" y="415.5" ></text>
+</g>
+<g >
+<title>std::unordered_set&lt;void*, std::hash&lt;void*&gt;, std::equal_to&lt;void*&gt;, std::allocator&lt;void*&gt; &gt;::insert (50,505,050 samples, 0.09%)</title><rect x="36.6" y="389" width="1.0" height="15.0" fill="rgb(209,165,9)" rx="2" ry="2" />
+<text  x="39.59" y="399.5" ></text>
+</g>
+<g >
+<title>[libstdc++.so.6.0.29] (58,848,484,260 samples, 99.45%)</title><rect x="14.4" y="581" width="1173.6" height="15.0" fill="rgb(223,151,13)" rx="2" ry="2" />
+<text  x="17.43" y="591.5" >[libstdc++.so.6.0.29]</text>
+</g>
+<g >
+<title>std::__detail::_Hash_code_base&lt;void*, std::pair&lt;void* const, Reclaimer::ReclaimNode*&gt;, std::__detail::_Select1st, std::hash&lt;void*&gt;, std::__detail::_Mod_range_hashing, std::__detail::_Default_ranged_hash, false&gt;::_M_bucket_index (20,202,020 samples, 0.03%)</title><rect x="35.6" y="325" width="0.4" height="15.0" fill="rgb(214,170,18)" rx="2" ry="2" />
+<text  x="38.58" y="335.5" ></text>
+</g>
+<g >
+<title>tcp_v4_do_rcv (10,101,010 samples, 0.02%)</title><rect x="1024.6" y="133" width="0.2" height="15.0" fill="rgb(216,209,49)" rx="2" ry="2" />
+<text  x="1027.62" y="143.5" ></text>
+</g>
+<g >
+<title>std::_Hashtable&lt;void*, std::pair&lt;void* const, Reclaimer::ReclaimNode*&gt;, std::allocator&lt;std::pair&lt;void* const, Reclaimer::ReclaimNode*&gt; &gt;, std::__detail::_Select1st, std::equal_to&lt;void*&gt;, std::hash&lt;void*&gt;, std::__detail::_Mod_range_hashing, std::__detail::_Default_ranged_hash, std::__detail::_Prime_rehash_policy, std::__detail::_Hashtable_traits&lt;false, false, true&gt; &gt;::_M_insert_unique_node (10,101,010 samples, 0.02%)</title><rect x="16.0" y="357" width="0.2" height="15.0" fill="rgb(221,36,16)" rx="2" ry="2" />
+<text  x="19.04" y="367.5" ></text>
+</g>
+<g >
+<title>pow@@GLIBC_2.29 (4,767,676,720 samples, 8.06%)</title><rect x="1026.0" y="437" width="95.1" height="15.0" fill="rgb(214,123,27)" rx="2" ry="2" />
+<text  x="1029.03" y="447.5" >pow@@GLIBC_..</text>
+</g>
+<g >
+<title>LockFreeHashTable&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, double_link_list&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;::Node*, std::hash&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt; &gt;::Segment::get_sub_segments (10,101,010 samples, 0.02%)</title><rect x="26.3" y="421" width="0.2" height="15.0" fill="rgb(205,184,33)" rx="2" ry="2" />
+<text  x="29.32" y="431.5" ></text>
+</g>
+<g >
+<title>irqentry_exit_to_user_mode (20,202,020 samples, 0.03%)</title><rect x="1025.6" y="373" width="0.4" height="15.0" fill="rgb(250,79,15)" rx="2" ry="2" />
+<text  x="1028.63" y="383.5" ></text>
+</g>
+<g >
+<title>__gnu_cxx::new_allocator&lt;std::__detail::_Hash_node&lt;void*, false&gt; &gt;::construct&lt;void*, void* const&amp;&gt; (10,101,010 samples, 0.02%)</title><rect x="37.2" y="293" width="0.2" height="15.0" fill="rgb(207,11,53)" rx="2" ry="2" />
+<text  x="40.19" y="303.5" ></text>
+</g>
+<g >
+<title>std::__detail::_Hashtable_alloc&lt;std::allocator&lt;std::__detail::_Hash_node&lt;void*, false&gt; &gt; &gt;::~_Hashtable_alloc (10,101,010 samples, 0.02%)</title><rect x="38.0" y="373" width="0.2" height="15.0" fill="rgb(243,118,9)" rx="2" ry="2" />
+<text  x="41.00" y="383.5" ></text>
+</g>
+<g >
+<title>std::_Hashtable&lt;void*, void*, std::allocator&lt;void*&gt;, std::__detail::_Identity, std::equal_to&lt;void*&gt;, std::hash&lt;void*&gt;, std::__detail::_Mod_range_hashing, std::__detail::_Default_ranged_hash, std::__detail::_Prime_rehash_policy, std::__detail::_Hashtable_traits&lt;false, true, true&gt; &gt;::~_Hashtable (20,202,020 samples, 0.03%)</title><rect x="37.6" y="373" width="0.4" height="15.0" fill="rgb(252,154,49)" rx="2" ry="2" />
+<text  x="40.60" y="383.5" ></text>
+</g>
+<g >
+<title>LockFreeHashTable&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, double_link_list&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;::Node*, std::hash&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt; &gt;::GetBucketHeadByIndex (50,505,050 samples, 0.09%)</title><rect x="25.3" y="421" width="1.0" height="15.0" fill="rgb(209,48,10)" rx="2" ry="2" />
+<text  x="28.31" y="431.5" ></text>
+</g>
+<g >
+<title>std::__invoke_r&lt;void, void  (30,303,030 samples, 0.05%)</title><rect x="34.6" y="357" width="0.6" height="15.0" fill="rgb(251,49,42)" rx="2" ry="2" />
+<text  x="37.57" y="367.5" ></text>
+</g>
+<g >
+<title>exit_to_user_mode_prepare (20,202,020 samples, 0.03%)</title><rect x="1025.6" y="357" width="0.4" height="15.0" fill="rgb(244,205,9)" rx="2" ry="2" />
+<text  x="1028.63" y="367.5" ></text>
+</g>
+<g >
+<title>std::_Hashtable&lt;void*, void*, std::allocator&lt;void*&gt;, std::__detail::_Identity, std::equal_to&lt;void*&gt;, std::hash&lt;void*&gt;, std::__detail::_Mod_range_hashing, std::__detail::_Default_ranged_hash, std::__detail::_Prime_rehash_policy, std::__detail::_Hashtable_traits&lt;false, true, true&gt; &gt;::_M_rehash (20,202,020 samples, 0.03%)</title><rect x="17.7" y="341" width="0.4" height="15.0" fill="rgb(227,87,0)" rx="2" ry="2" />
+<text  x="20.65" y="351.5" ></text>
+</g>
+<g >
+<title>__gthread_active_p (10,101,010 samples, 0.02%)</title><rect x="48.1" y="341" width="0.2" height="15.0" fill="rgb(223,219,18)" rx="2" ry="2" />
+<text  x="51.07" y="351.5" ></text>
+</g>
+<g >
+<title>[libm-2.31.so] (505,050,500 samples, 0.85%)</title><rect x="249.1" y="437" width="10.1" height="15.0" fill="rgb(225,92,46)" rx="2" ry="2" />
+<text  x="252.10" y="447.5" ></text>
+</g>
+<g >
+<title>std::thread::_Invoker&lt;std::tuple&lt;void  (58,848,484,260 samples, 99.45%)</title><rect x="14.4" y="549" width="1173.6" height="15.0" fill="rgb(208,59,43)" rx="2" ry="2" />
+<text  x="17.43" y="559.5" >std::thread::_Invoker&lt;std::tuple&lt;void </text>
+</g>
+<g >
+<title>std::_Hashtable&lt;void*, void*, std::allocator&lt;void*&gt;, std::__detail::_Identity, std::equal_to&lt;void*&gt;, std::hash&lt;void*&gt;, std::__detail::_Mod_range_hashing, std::__detail::_Default_ranged_hash, std::__detail::_Prime_rehash_policy, std::__detail::_Hashtable_traits&lt;false, true, true&gt; &gt;::_M_find_node (10,101,010 samples, 0.02%)</title><rect x="17.5" y="357" width="0.2" height="15.0" fill="rgb(231,33,14)" rx="2" ry="2" />
+<text  x="20.45" y="367.5" ></text>
+</g>
+<g >
+<title>std::shared_mutex::try_lock (40,404,040 samples, 0.07%)</title><rect x="44.2" y="389" width="0.8" height="15.0" fill="rgb(239,37,37)" rx="2" ry="2" />
+<text  x="47.24" y="399.5" ></text>
+</g>
+<g >
+<title>update_blocked_averages (10,101,010 samples, 0.02%)</title><rect x="1120.9" y="325" width="0.2" height="15.0" fill="rgb(215,73,50)" rx="2" ry="2" />
+<text  x="1123.91" y="335.5" ></text>
+</g>
+<g >
+<title>LockFreeHashTable&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, double_link_list&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;::Node*, std::hash&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt; &gt;::RegularNode::IsDummy (10,101,010 samples, 0.02%)</title><rect x="15.2" y="373" width="0.2" height="15.0" fill="rgb(247,120,3)" rx="2" ry="2" />
+<text  x="18.24" y="383.5" ></text>
+</g>
+<g >
+<title>std::uniform_real_distribution&lt;double&gt;::operator (222,222,220 samples, 0.38%)</title><rect x="1159.0" y="437" width="4.4" height="15.0" fill="rgb(234,121,24)" rx="2" ry="2" />
+<text  x="1161.98" y="447.5" ></text>
+</g>
+<g >
+<title>LockFreeHashTable&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, double_link_list&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;::Node*, std::hash&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt; &gt;::GetBucketHeadByHash (50,505,050 samples, 0.09%)</title><rect x="39.0" y="421" width="1.0" height="15.0" fill="rgb(217,130,16)" rx="2" ry="2" />
+<text  x="42.01" y="431.5" ></text>
+</g>
+<g >
+<title>LockFreeHashTable&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, double_link_list&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;::Node*, std::hash&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt; &gt;::Node::Node (20,202,020 samples, 0.03%)</title><rect x="20.1" y="421" width="0.4" height="15.0" fill="rgb(241,0,7)" rx="2" ry="2" />
+<text  x="23.07" y="431.5" ></text>
+</g>
+<g >
+<title>std::mersenne_twister_engine&lt;unsigned long, 32ul, 624ul, 397ul, 31ul, 2567483615ul, 11ul, 4294967295ul, 7ul, 2636928640ul, 15ul, 4022730752ul, 18ul, 1812433253ul&gt;::operator (10,101,010 samples, 0.02%)</title><rect x="1163.0" y="389" width="0.2" height="15.0" fill="rgb(226,165,45)" rx="2" ry="2" />
+<text  x="1166.01" y="399.5" ></text>
+</g>
+<g >
+<title>std::function&lt;void  (20,202,020 samples, 0.03%)</title><rect x="38.4" y="405" width="0.4" height="15.0" fill="rgb(234,111,53)" rx="2" ry="2" />
+<text  x="41.40" y="415.5" ></text>
+</g>
+<g >
+<title>std::atomic&lt;void*&gt;::store (10,101,010 samples, 0.02%)</title><rect x="19.3" y="373" width="0.2" height="15.0" fill="rgb(239,91,20)" rx="2" ry="2" />
+<text  x="22.27" y="383.5" ></text>
+</g>
+<g >
+<title>Reclaimer::UnMarkHazard (10,101,010 samples, 0.02%)</title><rect x="24.9" y="405" width="0.2" height="15.0" fill="rgb(211,110,15)" rx="2" ry="2" />
+<text  x="27.91" y="415.5" ></text>
+</g>
+<g >
+<title>operate_list&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;::move_to_top (151,515,150 samples, 0.26%)</title><rect x="45.3" y="453" width="3.0" height="15.0" fill="rgb(208,216,43)" rx="2" ry="2" />
+<text  x="48.25" y="463.5" ></text>
+</g>
+<g >
+<title>std::shared_mutex::try_lock (30,303,030 samples, 0.05%)</title><rect x="46.9" y="405" width="0.6" height="15.0" fill="rgb(246,7,39)" rx="2" ry="2" />
+<text  x="49.86" y="415.5" ></text>
+</g>
+<g >
+<title>LockFreeHashTable&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, double_link_list&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;::Node*, std::hash&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt; &gt;::GreaterOrEquals (20,202,020 samples, 0.03%)</title><rect x="24.5" y="405" width="0.4" height="15.0" fill="rgb(235,122,48)" rx="2" ry="2" />
+<text  x="27.50" y="415.5" ></text>
+</g>
+<g >
+<title>HazardPointer::UnMark (10,101,010 samples, 0.02%)</title><rect x="31.2" y="389" width="0.2" height="15.0" fill="rgb(254,67,50)" rx="2" ry="2" />
+<text  x="34.15" y="399.5" ></text>
+</g>
+<g >
+<title>netvsc_poll (10,101,010 samples, 0.02%)</title><rect x="1024.6" y="309" width="0.2" height="15.0" fill="rgb(227,214,33)" rx="2" ry="2" />
+<text  x="1027.62" y="319.5" ></text>
+</g>
+<g >
+<title>ip_sublist_rcv_finish (10,101,010 samples, 0.02%)</title><rect x="1024.6" y="213" width="0.2" height="15.0" fill="rgb(248,37,46)" rx="2" ry="2" />
+<text  x="1027.62" y="223.5" ></text>
+</g>
+<g >
+<title>__gnu_cxx::new_allocator&lt;std::__detail::_Hash_node&lt;void*, false&gt; &gt;::allocate (10,101,010 samples, 0.02%)</title><rect x="37.0" y="293" width="0.2" height="15.0" fill="rgb(233,60,5)" rx="2" ry="2" />
+<text  x="39.99" y="303.5" ></text>
+</g>
+<g >
+<title>Reclaimer::MarkHazard (20,202,020 samples, 0.03%)</title><rect x="29.5" y="389" width="0.4" height="15.0" fill="rgb(205,196,45)" rx="2" ry="2" />
+<text  x="32.54" y="399.5" ></text>
+</g>
+<g >
+<title>std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;::length (30,303,030 samples, 0.05%)</title><rect x="40.8" y="421" width="0.6" height="15.0" fill="rgb(250,10,13)" rx="2" ry="2" />
+<text  x="43.82" y="431.5" ></text>
+</g>
+<g >
+<title>std::operator&amp; (10,101,010 samples, 0.02%)</title><rect x="19.7" y="389" width="0.2" height="15.0" fill="rgb(218,121,27)" rx="2" ry="2" />
+<text  x="22.67" y="399.5" ></text>
+</g>
+<g >
+<title>std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;::_M_construct&lt;char*&gt; (10,101,010 samples, 0.02%)</title><rect x="48.3" y="453" width="0.2" height="15.0" fill="rgb(212,177,35)" rx="2" ry="2" />
+<text  x="51.27" y="463.5" ></text>
+</g>
+<g >
+<title>std::atomic&lt;void*&gt;::load (20,202,020 samples, 0.03%)</title><rect x="25.9" y="389" width="0.4" height="15.0" fill="rgb(246,140,39)" rx="2" ry="2" />
+<text  x="28.91" y="399.5" ></text>
+</g>
+<g >
+<title>__irq_exit_rcu (10,101,010 samples, 0.02%)</title><rect x="1120.9" y="373" width="0.2" height="15.0" fill="rgb(251,95,42)" rx="2" ry="2" />
+<text  x="1123.91" y="383.5" ></text>
+</g>
+<g >
+<title>__softirqentry_text_start (10,101,010 samples, 0.02%)</title><rect x="1120.9" y="357" width="0.2" height="15.0" fill="rgb(253,137,41)" rx="2" ry="2" />
+<text  x="1123.91" y="367.5" ></text>
+</g>
+<g >
+<title>LockFreeHashTable&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, double_link_list&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;::Node*, std::hash&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt; &gt;::Find (80,808,080 samples, 0.14%)</title><rect x="19.3" y="453" width="1.6" height="15.0" fill="rgb(247,178,37)" rx="2" ry="2" />
+<text  x="22.27" y="463.5" ></text>
+</g>
+<g >
+<title>LockFreeHashTable&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, double_link_list&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;::Node*, std::hash&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt; &gt;::Insert (60,606,060 samples, 0.10%)</title><rect x="20.9" y="453" width="1.2" height="15.0" fill="rgb(212,65,11)" rx="2" ry="2" />
+<text  x="23.88" y="463.5" ></text>
+</g>
+<g >
+<title>std::__detail::_Hashtable_base&lt;void*, void*, std::__detail::_Identity, std::equal_to&lt;void*&gt;, std::hash&lt;void*&gt;, std::__detail::_Mod_range_hashing, std::__detail::_Default_ranged_hash, std::__detail::_Hashtable_traits&lt;false, true, true&gt; &gt;::_M_equals (10,101,010 samples, 0.02%)</title><rect x="17.3" y="341" width="0.2" height="15.0" fill="rgb(228,99,25)" rx="2" ry="2" />
+<text  x="20.25" y="351.5" ></text>
+</g>
+<g >
+<title>rebalance_domains (10,101,010 samples, 0.02%)</title><rect x="1025.2" y="325" width="0.2" height="15.0" fill="rgb(213,154,43)" rx="2" ry="2" />
+<text  x="1028.23" y="335.5" ></text>
+</g>
+<g >
+<title>__gnu_cxx::new_allocator&lt;std::__detail::_Hash_node&lt;void*, false&gt; &gt;::_M_max_size (10,101,010 samples, 0.02%)</title><rect x="37.0" y="277" width="0.2" height="15.0" fill="rgb(214,86,40)" rx="2" ry="2" />
+<text  x="39.99" y="287.5" ></text>
+</g>
+<g >
+<title>run_timer_softirq (10,101,010 samples, 0.02%)</title><rect x="1025.4" y="341" width="0.2" height="15.0" fill="rgb(205,84,2)" rx="2" ry="2" />
+<text  x="1028.43" y="351.5" ></text>
+</g>
+<g >
+<title>std::_Hashtable&lt;void*, std::pair&lt;void* const, Reclaimer::ReclaimNode*&gt;, std::allocator&lt;std::pair&lt;void* const, Reclaimer::ReclaimNode*&gt; &gt;, std::__detail::_Select1st, std::equal_to&lt;void*&gt;, std::hash&lt;void*&gt;, std::__detail::_Mod_range_hashing, std::__detail::_Default_ranged_hash, std::__detail::_Prime_rehash_policy, std::__detail::_Hashtable_traits&lt;false, false, true&gt; &gt;::_M_insert_bucket_begin (10,101,010 samples, 0.02%)</title><rect x="16.0" y="341" width="0.2" height="15.0" fill="rgb(241,123,6)" rx="2" ry="2" />
+<text  x="19.04" y="351.5" ></text>
+</g>
+<g >
+<title>pthread_rwlock_trywrlock (30,303,030 samples, 0.05%)</title><rect x="46.9" y="373" width="0.6" height="15.0" fill="rgb(239,176,16)" rx="2" ry="2" />
+<text  x="49.86" y="383.5" ></text>
+</g>
+<g >
+<title>double_link_list&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;::remove_node (101,010,100 samples, 0.17%)</title><rect x="46.3" y="437" width="2.0" height="15.0" fill="rgb(220,92,40)" rx="2" ry="2" />
+<text  x="49.26" y="447.5" ></text>
+</g>
+<g >
+<title>__softirqentry_text_start (40,404,040 samples, 0.07%)</title><rect x="1024.8" y="357" width="0.8" height="15.0" fill="rgb(221,130,34)" rx="2" ry="2" />
+<text  x="1027.82" y="367.5" ></text>
+</g>
+<g >
+<title>LockFreeHashTable&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, double_link_list&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;::Node*, std::hash&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt; &gt;::InsertRegularNode (80,808,080 samples, 0.14%)</title><rect x="29.1" y="437" width="1.6" height="15.0" fill="rgb(211,194,11)" rx="2" ry="2" />
+<text  x="32.14" y="447.5" ></text>
+</g>
+<g >
+<title>asm_sysvec_hyperv_stimer0 (10,101,010 samples, 0.02%)</title><rect x="1120.9" y="421" width="0.2" height="15.0" fill="rgb(208,188,46)" rx="2" ry="2" />
+<text  x="1123.91" y="431.5" ></text>
+</g>
+<g >
+<title>std::_Function_base::_Base_manager&lt;void  (10,101,010 samples, 0.02%)</title><rect x="32.6" y="325" width="0.2" height="15.0" fill="rgb(247,104,24)" rx="2" ry="2" />
+<text  x="35.56" y="335.5" ></text>
+</g>
+<g >
+<title>std::swap&lt;void  (10,101,010 samples, 0.02%)</title><rect x="15.8" y="373" width="0.2" height="15.0" fill="rgb(240,36,24)" rx="2" ry="2" />
+<text  x="18.84" y="383.5" ></text>
+</g>
+<g >
+<title>std::__shared_mutex_pthread::try_lock_shared (10,101,010 samples, 0.02%)</title><rect x="41.8" y="373" width="0.2" height="15.0" fill="rgb(217,29,20)" rx="2" ry="2" />
+<text  x="44.83" y="383.5" ></text>
+</g>
+<g >
+<title>std::operator&amp; (10,101,010 samples, 0.02%)</title><rect x="26.5" y="405" width="0.2" height="15.0" fill="rgb(214,90,12)" rx="2" ry="2" />
+<text  x="29.52" y="415.5" ></text>
+</g>
+<g >
+<title>LockFreeHashTable&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, double_link_list&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;::Node*, std::hash&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt; &gt;::SearchNode (70,707,070 samples, 0.12%)</title><rect x="29.1" y="421" width="1.4" height="15.0" fill="rgb(234,120,25)" rx="2" ry="2" />
+<text  x="32.14" y="431.5" ></text>
+</g>
+<g >
+<title>asm_sysvec_hyperv_stimer0 (10,101,010 samples, 0.02%)</title><rect x="1161.4" y="357" width="0.2" height="15.0" fill="rgb(210,24,47)" rx="2" ry="2" />
+<text  x="1164.40" y="367.5" ></text>
+</g>
+<g >
+<title>std::_Hashtable&lt;void*, void*, std::allocator&lt;void*&gt;, std::__detail::_Identity, std::equal_to&lt;void*&gt;, std::hash&lt;void*&gt;, std::__detail::_Mod_range_hashing, std::__detail::_Default_ranged_hash, std::__detail::_Prime_rehash_policy, std::__detail::_Hashtable_traits&lt;false, true, true&gt; &gt;::~_Hashtable (10,101,010 samples, 0.02%)</title><rect x="18.1" y="389" width="0.2" height="15.0" fill="rgb(242,43,49)" rx="2" ry="2" />
+<text  x="21.06" y="399.5" ></text>
+</g>
+<g >
+<title>LockFreeHashTable&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, double_link_list&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;::Node*, std::hash&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt; &gt;::RegularNode::~RegularNode (10,101,010 samples, 0.02%)</title><rect x="34.8" y="293" width="0.2" height="15.0" fill="rgb(247,155,7)" rx="2" ry="2" />
+<text  x="37.78" y="303.5" ></text>
+</g>
+<g >
+<title>Reclaimer::UnMarkHazard (10,101,010 samples, 0.02%)</title><rect x="23.1" y="389" width="0.2" height="15.0" fill="rgb(209,157,47)" rx="2" ry="2" />
+<text  x="26.09" y="399.5" ></text>
+</g>
+<g >
+<title>Reclaimer::MarkHazard (10,101,010 samples, 0.02%)</title><rect x="14.8" y="389" width="0.2" height="15.0" fill="rgb(206,149,14)" rx="2" ry="2" />
+<text  x="17.83" y="399.5" ></text>
+</g>
+<g >
+<title>std::forward&lt;std::pair&lt;void* const, Reclaimer::ReclaimNode*&gt; const&amp;&gt; (10,101,010 samples, 0.02%)</title><rect x="33.4" y="277" width="0.2" height="15.0" fill="rgb(217,13,27)" rx="2" ry="2" />
+<text  x="36.37" y="287.5" ></text>
+</g>
+<g >
+<title>std::__detail::_Select1st::operator (10,101,010 samples, 0.02%)</title><rect x="35.8" y="309" width="0.2" height="15.0" fill="rgb(253,147,27)" rx="2" ry="2" />
+<text  x="38.78" y="319.5" ></text>
+</g>
+<g >
+<title>LockFreeHashTable&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, double_link_list&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;::Node*, std::hash&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt; &gt;::Node::Reverse (10,101,010 samples, 0.02%)</title><rect x="40.2" y="373" width="0.2" height="15.0" fill="rgb(232,6,41)" rx="2" ry="2" />
+<text  x="43.22" y="383.5" ></text>
+</g>
+<g >
+<title>netif_receive_skb_list_internal (10,101,010 samples, 0.02%)</title><rect x="1024.6" y="277" width="0.2" height="15.0" fill="rgb(216,125,23)" rx="2" ry="2" />
+<text  x="1027.62" y="287.5" ></text>
+</g>
+<g >
+<title>LockFreeHashTable&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, double_link_list&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;::Node*, std::hash&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt; &gt;::GetBucketHeadByHash (10,101,010 samples, 0.02%)</title><rect x="19.9" y="437" width="0.2" height="15.0" fill="rgb(253,79,1)" rx="2" ry="2" />
+<text  x="22.87" y="447.5" ></text>
+</g>
+<g >
+<title>std::unique_lock&lt;std::shared_mutex&gt;::~unique_lock (40,404,040 samples, 0.07%)</title><rect x="47.5" y="421" width="0.8" height="15.0" fill="rgb(253,9,5)" rx="2" ry="2" />
+<text  x="50.47" y="431.5" ></text>
+</g>
+<g >
+<title>ip_protocol_deliver_rcu (10,101,010 samples, 0.02%)</title><rect x="1024.6" y="165" width="0.2" height="15.0" fill="rgb(207,111,27)" rx="2" ry="2" />
+<text  x="1027.62" y="175.5" ></text>
+</g>
+<g >
+<title>std::__detail::_Adaptor&lt;std::mersenne_twister_engine&lt;unsigned long, 32ul, 624ul, 397ul, 31ul, 2567483615ul, 11ul, 4294967295ul, 7ul, 2636928640ul, 15ul, 4022730752ul, 18ul, 1812433253ul&gt;, double&gt;::operator (171,717,170 samples, 0.29%)</title><rect x="1159.8" y="405" width="3.4" height="15.0" fill="rgb(229,139,16)" rx="2" ry="2" />
+<text  x="1162.78" y="415.5" ></text>
+</g>
+<g >
+<title>__memcmp_avx2_movbe (40,404,040 samples, 0.07%)</title><rect x="1188.0" y="629" width="0.8" height="15.0" fill="rgb(209,138,13)" rx="2" ry="2" />
+<text  x="1190.99" y="639.5" ></text>
+</g>
+<g >
+<title>LockFreeHashTable&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, double_link_list&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;::Node*, std::hash&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt; &gt;::GetBucketHeadByHash (10,101,010 samples, 0.02%)</title><rect x="18.3" y="437" width="0.2" height="15.0" fill="rgb(205,219,30)" rx="2" ry="2" />
+<text  x="21.26" y="447.5" ></text>
+</g>
+<g >
+<title>HazardPointer::HazardPointer (10,101,010 samples, 0.02%)</title><rect x="14.8" y="405" width="0.2" height="15.0" fill="rgb(239,165,29)" rx="2" ry="2" />
+<text  x="17.83" y="415.5" ></text>
+</g>
+<g >
+<title>HazardPointer::~HazardPointer (20,202,020 samples, 0.03%)</title><rect x="22.9" y="421" width="0.4" height="15.0" fill="rgb(254,62,43)" rx="2" ry="2" />
+<text  x="25.89" y="431.5" ></text>
+</g>
+<g >
+<title>LockFreeHashTable&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, double_link_list&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;::Node*, std::hash&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt; &gt;::GetBucketHeadByIndex (10,101,010 samples, 0.02%)</title><rect x="18.3" y="421" width="0.2" height="15.0" fill="rgb(239,88,50)" rx="2" ry="2" />
+<text  x="21.26" y="431.5" ></text>
+</g>
+<g >
+<title>LockFreeHashTable&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, double_link_list&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;::Node*, std::hash&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt; &gt;::Node::get_next (10,101,010 samples, 0.02%)</title><rect x="21.7" y="405" width="0.2" height="15.0" fill="rgb(250,78,9)" rx="2" ry="2" />
+<text  x="24.68" y="415.5" ></text>
+</g>
+<g >
+<title>LockFreeHashTable&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, double_link_list&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;::Node*, std::hash&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt; &gt;::Equals (10,101,010 samples, 0.02%)</title><rect x="21.5" y="405" width="0.2" height="15.0" fill="rgb(251,206,30)" rx="2" ry="2" />
+<text  x="24.48" y="415.5" ></text>
+</g>
+<g >
+<title>Reclaimer::MarkHazard (10,101,010 samples, 0.02%)</title><rect x="15.4" y="405" width="0.2" height="15.0" fill="rgb(231,217,38)" rx="2" ry="2" />
+<text  x="18.44" y="415.5" ></text>
+</g>
+<g >
+<title>pow@@GLIBC_2.29 (10,101,010 samples, 0.02%)</title><rect x="28.9" y="421" width="0.2" height="15.0" fill="rgb(207,137,19)" rx="2" ry="2" />
+<text  x="31.93" y="431.5" ></text>
+</g>
+<g >
+<title>std::allocator_traits&lt;std::allocator&lt;std::__detail::_Hash_node&lt;std::pair&lt;void* const, Reclaimer::ReclaimNode*&gt;, false&gt; &gt; &gt;::deallocate (10,101,010 samples, 0.02%)</title><rect x="36.2" y="309" width="0.2" height="15.0" fill="rgb(232,56,28)" rx="2" ry="2" />
+<text  x="39.19" y="319.5" ></text>
+</g>
+<g >
+<title>std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;::_M_create (10,101,010 samples, 0.02%)</title><rect x="14.2" y="613" width="0.2" height="15.0" fill="rgb(243,7,24)" rx="2" ry="2" />
+<text  x="17.23" y="623.5" ></text>
+</g>
+<g >
+<title>std::thread::_Invoker&lt;std::tuple&lt;void  (58,848,484,260 samples, 99.45%)</title><rect x="14.4" y="533" width="1173.6" height="15.0" fill="rgb(247,129,40)" rx="2" ry="2" />
+<text  x="17.43" y="543.5" >std::thread::_Invoker&lt;std::tuple&lt;void </text>
+</g>
+<g >
+<title>tcp_write_timer_handler (10,101,010 samples, 0.02%)</title><rect x="1025.4" y="277" width="0.2" height="15.0" fill="rgb(218,70,36)" rx="2" ry="2" />
+<text  x="1028.43" y="287.5" ></text>
+</g>
+<g >
+<title>LockFreeHashTable&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, double_link_list&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;::Node*, std::hash&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt; &gt;::Node::Node (10,101,010 samples, 0.02%)</title><rect x="18.5" y="437" width="0.2" height="15.0" fill="rgb(224,215,9)" rx="2" ry="2" />
+<text  x="21.46" y="447.5" ></text>
+</g>
+<g >
+<title>LockFreeHashTable&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, double_link_list&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;::Node*, std::hash&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt; &gt;::Node::RegularKey (10,101,010 samples, 0.02%)</title><rect x="20.3" y="405" width="0.2" height="15.0" fill="rgb(249,214,20)" rx="2" ry="2" />
+<text  x="23.27" y="415.5" ></text>
+</g>
+<g >
+<title>__sk_mem_reduce_allocated (10,101,010 samples, 0.02%)</title><rect x="1025.4" y="245" width="0.2" height="15.0" fill="rgb(249,8,18)" rx="2" ry="2" />
+<text  x="1028.43" y="255.5" ></text>
+</g>
+<g >
+<title>__ieee754_pow_fma (10,101,010 samples, 0.02%)</title><rect x="19.9" y="421" width="0.2" height="15.0" fill="rgb(230,46,0)" rx="2" ry="2" />
+<text  x="22.87" y="431.5" ></text>
+</g>
+<g >
+<title>std::atomic&lt;void*&gt;::store (10,101,010 samples, 0.02%)</title><rect x="23.1" y="373" width="0.2" height="15.0" fill="rgb(207,158,17)" rx="2" ry="2" />
+<text  x="26.09" y="383.5" ></text>
+</g>
+<g >
+<title>std::__shared_mutex_pthread::try_lock (30,303,030 samples, 0.05%)</title><rect x="46.9" y="389" width="0.6" height="15.0" fill="rgb(251,214,16)" rx="2" ry="2" />
+<text  x="49.86" y="399.5" ></text>
+</g>
+<g >
+<title>std::_Hashtable&lt;void*, std::pair&lt;void* const, Reclaimer::ReclaimNode*&gt;, std::allocator&lt;std::pair&lt;void* const, Reclaimer::ReclaimNode*&gt; &gt;, std::__detail::_Select1st, std::equal_to&lt;void*&gt;, std::hash&lt;void*&gt;, std::__detail::_Mod_range_hashing, std::__detail::_Default_ranged_hash, std::__detail::_Prime_rehash_policy, std::__detail::_Hashtable_traits&lt;false, false, true&gt; &gt;::emplace&lt;std::pair&lt;void*, Reclaimer::ReclaimNode*&gt; &gt; (10,101,010 samples, 0.02%)</title><rect x="16.0" y="389" width="0.2" height="15.0" fill="rgb(229,104,40)" rx="2" ry="2" />
+<text  x="19.04" y="399.5" ></text>
+</g>
+<g >
+<title>irqentry_exit (20,202,020 samples, 0.03%)</title><rect x="1025.6" y="389" width="0.4" height="15.0" fill="rgb(231,105,42)" rx="2" ry="2" />
+<text  x="1028.63" y="399.5" ></text>
+</g>
+<g >
+<title>std::function&lt;void  (10,101,010 samples, 0.02%)</title><rect x="15.6" y="373" width="0.2" height="15.0" fill="rgb(238,220,36)" rx="2" ry="2" />
+<text  x="18.64" y="383.5" ></text>
+</g>
+<g >
+<title>LockFreeHashTable&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, double_link_list&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;::Node*, std::hash&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt; &gt;::FindNode (141,414,140 samples, 0.24%)</title><rect x="22.5" y="437" width="2.8" height="15.0" fill="rgb(250,130,16)" rx="2" ry="2" />
+<text  x="25.49" y="447.5" ></text>
+</g>
+<g >
+<title>__softirqentry_text_start (10,101,010 samples, 0.02%)</title><rect x="1161.4" y="293" width="0.2" height="15.0" fill="rgb(248,6,25)" rx="2" ry="2" />
+<text  x="1164.40" y="303.5" ></text>
+</g>
+<g >
+<title>sysvec_hyperv_stimer0 (10,101,010 samples, 0.02%)</title><rect x="1120.9" y="405" width="0.2" height="15.0" fill="rgb(248,192,39)" rx="2" ry="2" />
+<text  x="1123.91" y="415.5" ></text>
+</g>
+<g >
+<title>irq_exit_rcu (40,404,040 samples, 0.07%)</title><rect x="1024.8" y="389" width="0.8" height="15.0" fill="rgb(246,124,0)" rx="2" ry="2" />
+<text  x="1027.82" y="399.5" ></text>
+</g>
+<g >
+<title>std::unordered_map&lt;void*, Reclaimer::ReclaimNode*, std::hash&lt;void*&gt;, std::equal_to&lt;void*&gt;, std::allocator&lt;std::pair&lt;void* const, Reclaimer::ReclaimNode*&gt; &gt; &gt;::end (10,101,010 samples, 0.02%)</title><rect x="38.8" y="405" width="0.2" height="15.0" fill="rgb(221,208,4)" rx="2" ry="2" />
+<text  x="41.81" y="415.5" ></text>
+</g>
+<g >
+<title>std::__glibcxx_rwlock_trywrlock (10,101,010 samples, 0.02%)</title><rect x="44.8" y="357" width="0.2" height="15.0" fill="rgb(244,19,25)" rx="2" ry="2" />
+<text  x="47.85" y="367.5" ></text>
+</g>
+<g >
+<title>__run_timers.part.0 (10,101,010 samples, 0.02%)</title><rect x="1025.4" y="325" width="0.2" height="15.0" fill="rgb(249,225,30)" rx="2" ry="2" />
+<text  x="1028.43" y="335.5" ></text>
+</g>
+<g >
+<title>std::__detail::_Hashtable_alloc&lt;std::allocator&lt;std::__detail::_Hash_node&lt;void*, false&gt; &gt; &gt;::_M_deallocate_node (10,101,010 samples, 0.02%)</title><rect x="37.8" y="325" width="0.2" height="15.0" fill="rgb(214,60,17)" rx="2" ry="2" />
+<text  x="40.80" y="335.5" ></text>
+</g>
+<g >
+<title>double_link_list&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;::insert_node_to_top (90,909,090 samples, 0.15%)</title><rect x="43.2" y="421" width="1.8" height="15.0" fill="rgb(239,84,0)" rx="2" ry="2" />
+<text  x="46.24" y="431.5" ></text>
+</g>
+<g >
+<title>LockFreeHashTable&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, double_link_list&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;::Node*, std::hash&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt; &gt;::Find (272,727,270 samples, 0.46%)</title><rect x="22.5" y="453" width="5.4" height="15.0" fill="rgb(224,24,8)" rx="2" ry="2" />
+<text  x="25.49" y="463.5" ></text>
+</g>
+<g >
+<title>_raw_spin_unlock_irqrestore (10,101,010 samples, 0.02%)</title><rect x="1024.6" y="37" width="0.2" height="15.0" fill="rgb(217,123,48)" rx="2" ry="2" />
+<text  x="1027.62" y="47.5" ></text>
+</g>
+<g >
+<title>std::_Hashtable&lt;void*, std::pair&lt;void* const, Reclaimer::ReclaimNode*&gt;, std::allocator&lt;std::pair&lt;void* const, Reclaimer::ReclaimNode*&gt; &gt;, std::__detail::_Select1st, std::equal_to&lt;void*&gt;, std::hash&lt;void*&gt;, std::__detail::_Mod_range_hashing, std::__detail::_Default_ranged_hash, std::__detail::_Prime_rehash_policy, std::__detail::_Hashtable_traits&lt;false, false, true&gt; &gt;::erase (20,202,020 samples, 0.03%)</title><rect x="16.4" y="373" width="0.4" height="15.0" fill="rgb(207,179,29)" rx="2" ry="2" />
+<text  x="19.45" y="383.5" ></text>
+</g>
+<g >
+<title>std::__detail::_Hash_code_base&lt;void*, void*, std::__detail::_Identity, std::hash&lt;void*&gt;, std::__detail::_Mod_range_hashing, std::__detail::_Default_ranged_hash, false&gt;::_M_hash_code (10,101,010 samples, 0.02%)</title><rect x="37.4" y="341" width="0.2" height="15.0" fill="rgb(222,98,5)" rx="2" ry="2" />
+<text  x="40.40" y="351.5" ></text>
+</g>
+<g >
+<title>std::_Hashtable&lt;void*, std::pair&lt;void* const, Reclaimer::ReclaimNode*&gt;, std::allocator&lt;std::pair&lt;void* const, Reclaimer::ReclaimNode*&gt; &gt;, std::__detail::_Select1st, std::equal_to&lt;void*&gt;, std::hash&lt;void*&gt;, std::__detail::_Mod_range_hashing, std::__detail::_Default_ranged_hash, std::__detail::_Prime_rehash_policy, std::__detail::_Hashtable_traits&lt;false, false, true&gt; &gt;::_M_insert_unique_node (10,101,010 samples, 0.02%)</title><rect x="33.6" y="341" width="0.2" height="15.0" fill="rgb(210,131,32)" rx="2" ry="2" />
+<text  x="36.57" y="351.5" ></text>
+</g>
+<g >
+<title>Reclaimer::ReclaimLater (30,303,030 samples, 0.05%)</title><rect x="15.6" y="421" width="0.6" height="15.0" fill="rgb(214,98,23)" rx="2" ry="2" />
+<text  x="18.64" y="431.5" ></text>
+</g>
+<g >
+<title>std::unique_lock&lt;std::shared_mutex&gt;::unique_lock (30,303,030 samples, 0.05%)</title><rect x="42.0" y="405" width="0.6" height="15.0" fill="rgb(208,94,5)" rx="2" ry="2" />
+<text  x="45.03" y="415.5" ></text>
+</g>
+<g >
+<title>std::__detail::_Hashtable_alloc&lt;std::allocator&lt;std::__detail::_Hash_node&lt;void*, false&gt; &gt; &gt;::_M_allocate_buckets (10,101,010 samples, 0.02%)</title><rect x="17.9" y="309" width="0.2" height="15.0" fill="rgb(248,75,1)" rx="2" ry="2" />
+<text  x="20.86" y="319.5" ></text>
+</g>
+<g >
+<title>LockFreeHashTable&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, double_link_list&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;::Node*, std::hash&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt; &gt;::RegularNode::RegularNode (10,101,010 samples, 0.02%)</title><rect x="21.9" y="437" width="0.2" height="15.0" fill="rgb(245,58,17)" rx="2" ry="2" />
+<text  x="24.88" y="447.5" ></text>
+</g>
+<g >
+<title>ZipfianStringGenerator::getRandomString[abi:cxx11] (57,050,504,480 samples, 96.42%)</title><rect x="48.5" y="469" width="1137.7" height="15.0" fill="rgb(228,80,41)" rx="2" ry="2" />
+<text  x="51.47" y="479.5" >ZipfianStringGenerator::getRandomString[abi:cxx11]</text>
+</g>
+<g >
+<title>__wake_up_sync_key (10,101,010 samples, 0.02%)</title><rect x="1024.6" y="53" width="0.2" height="15.0" fill="rgb(239,228,32)" rx="2" ry="2" />
+<text  x="1027.62" y="63.5" ></text>
+</g>
+<g >
+<title>std::generate_canonical&lt;double, 53ul, std::mersenne_twister_engine&lt;unsigned long, 32ul, 624ul, 397ul, 31ul, 2567483615ul, 11ul, 4294967295ul, 7ul, 2636928640ul, 15ul, 4022730752ul, 18ul, 1812433253ul&gt; &gt; (161,616,160 samples, 0.27%)</title><rect x="1159.8" y="389" width="3.2" height="15.0" fill="rgb(226,158,51)" rx="2" ry="2" />
+<text  x="1162.78" y="399.5" ></text>
+</g>
+<g >
+<title>[unknown] (59,070,706,480 samples, 99.83%)</title><rect x="10.0" y="629" width="1178.0" height="15.0" fill="rgb(224,49,54)" rx="2" ry="2" />
+<text  x="13.00" y="639.5" >[unknown]</text>
+</g>
+<g >
+<title>std::uniform_real_distribution&lt;double&gt;::operator (60,606,060 samples, 0.10%)</title><rect x="1186.8" y="469" width="1.2" height="15.0" fill="rgb(216,122,20)" rx="2" ry="2" />
+<text  x="1189.78" y="479.5" ></text>
+</g>
+<g >
+<title>std::move&lt;std::_Any_data&amp;&gt; (10,101,010 samples, 0.02%)</title><rect x="15.6" y="357" width="0.2" height="15.0" fill="rgb(245,136,23)" rx="2" ry="2" />
+<text  x="18.64" y="367.5" ></text>
+</g>
+<g >
+<title>std::_Hashtable&lt;void*, std::pair&lt;void* const, Reclaimer::ReclaimNode*&gt;, std::allocator&lt;std::pair&lt;void* const, Reclaimer::ReclaimNode*&gt; &gt;, std::__detail::_Select1st, std::equal_to&lt;void*&gt;, std::hash&lt;void*&gt;, std::__detail::_Mod_range_hashing, std::__detail::_Default_ranged_hash, std::__detail::_Prime_rehash_policy, std::__detail::_Hashtable_traits&lt;false, false, true&gt; &gt;::_M_find_before_node (10,101,010 samples, 0.02%)</title><rect x="33.4" y="325" width="0.2" height="15.0" fill="rgb(206,115,48)" rx="2" ry="2" />
+<text  x="36.37" y="335.5" ></text>
+</g>
+<g >
+<title>operate_list&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;::insert_to_top (717,171,710 samples, 1.21%)</title><rect x="30.9" y="453" width="14.4" height="15.0" fill="rgb(217,17,27)" rx="2" ry="2" />
+<text  x="33.95" y="463.5" ></text>
+</g>
+<g >
+<title>std::atomic&lt;LockFreeHashTable&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, double_link_list&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;::Node*, std::hash&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt; &gt;::Node*&gt;::compare_exchange_strong (10,101,010 samples, 0.02%)</title><rect x="38.2" y="405" width="0.2" height="15.0" fill="rgb(242,143,36)" rx="2" ry="2" />
+<text  x="41.20" y="415.5" ></text>
+</g>
+<g >
+<title>LockFreeHashTable&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, double_link_list&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;::Node*, std::hash&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt; &gt;::Delete (525,252,520 samples, 0.89%)</title><rect x="30.9" y="437" width="10.5" height="15.0" fill="rgb(208,175,8)" rx="2" ry="2" />
+<text  x="33.95" y="447.5" ></text>
+</g>
+<g >
+<title>LockFreeHashTable&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, double_link_list&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;::Node*, std::hash&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt; &gt;::Node::RegularKey (10,101,010 samples, 0.02%)</title><rect x="40.2" y="389" width="0.2" height="15.0" fill="rgb(231,192,39)" rx="2" ry="2" />
+<text  x="43.22" y="399.5" ></text>
+</g>
+<g >
+<title>std::_Hashtable&lt;void*, std::pair&lt;void* const, Reclaimer::ReclaimNode*&gt;, std::allocator&lt;std::pair&lt;void* const, Reclaimer::ReclaimNode*&gt; &gt;, std::__detail::_Select1st, std::equal_to&lt;void*&gt;, std::hash&lt;void*&gt;, std::__detail::_Mod_range_hashing, std::__detail::_Default_ranged_hash, std::__detail::_Prime_rehash_policy, std::__detail::_Hashtable_traits&lt;false, false, true&gt; &gt;::_M_bucket_index (10,101,010 samples, 0.02%)</title><rect x="36.0" y="325" width="0.2" height="15.0" fill="rgb(228,196,35)" rx="2" ry="2" />
+<text  x="38.98" y="335.5" ></text>
+</g>
+<g >
+<title>std::thread::_State_impl&lt;std::thread::_Invoker&lt;std::tuple&lt;void  (58,848,484,260 samples, 99.45%)</title><rect x="14.4" y="613" width="1173.6" height="15.0" fill="rgb(209,118,1)" rx="2" ry="2" />
+<text  x="17.43" y="623.5" >std::thread::_State_impl&lt;std::thread::_Invoker&lt;std::tuple&lt;void </text>
+</g>
+<g >
+<title>std::atomic&lt;double_link_list&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;::Node**&gt;::load (10,101,010 samples, 0.02%)</title><rect x="34.8" y="277" width="0.2" height="15.0" fill="rgb(251,99,16)" rx="2" ry="2" />
+<text  x="37.78" y="287.5" ></text>
+</g>
+<g >
+<title>double_link_list&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;::insert_kv_to_top (90,909,090 samples, 0.15%)</title><rect x="43.2" y="437" width="1.8" height="15.0" fill="rgb(229,205,41)" rx="2" ry="2" />
+<text  x="46.24" y="447.5" ></text>
+</g>
+<g >
+<title>thread_test_zip (59,171,716,580 samples, 100.00%)</title><rect x="10.0" y="645" width="1180.0" height="15.0" fill="rgb(211,167,24)" rx="2" ry="2" />
+<text  x="13.00" y="655.5" >thread_test_zip</text>
+</g>
+<g >
+<title>std::pair&lt;void* const, Reclaimer::ReclaimNode*&gt;::pair&lt;void*, Reclaimer::ReclaimNode*, true&gt; (10,101,010 samples, 0.02%)</title><rect x="33.8" y="277" width="0.2" height="15.0" fill="rgb(243,78,46)" rx="2" ry="2" />
+<text  x="36.77" y="287.5" ></text>
+</g>
+<g >
+<title>std::_Hashtable&lt;void*, void*, std::allocator&lt;void*&gt;, std::__detail::_Identity, std::equal_to&lt;void*&gt;, std::hash&lt;void*&gt;, std::__detail::_Mod_range_hashing, std::__detail::_Default_ranged_hash, std::__detail::_Prime_rehash_policy, std::__detail::_Hashtable_traits&lt;false, true, true&gt; &gt;::_M_rehash_aux (20,202,020 samples, 0.03%)</title><rect x="17.7" y="325" width="0.4" height="15.0" fill="rgb(227,197,8)" rx="2" ry="2" />
+<text  x="20.65" y="335.5" ></text>
+</g>
+<g >
+<title>std::__invoke_impl&lt;void, void  (20,202,020 samples, 0.03%)</title><rect x="34.8" y="341" width="0.4" height="15.0" fill="rgb(221,152,0)" rx="2" ry="2" />
+<text  x="37.78" y="351.5" ></text>
+</g>
+<g >
+<title>std::_Hashtable&lt;void*, std::pair&lt;void* const, Reclaimer::ReclaimNode*&gt;, std::allocator&lt;std::pair&lt;void* const, Reclaimer::ReclaimNode*&gt; &gt;, std::__detail::_Select1st, std::equal_to&lt;void*&gt;, std::hash&lt;void*&gt;, std::__detail::_Mod_range_hashing, std::__detail::_Default_ranged_hash, std::__detail::_Prime_rehash_policy, std::__detail::_Hashtable_traits&lt;false, false, true&gt; &gt;::_M_emplace&lt;std::pair&lt;void*, Reclaimer::ReclaimNode*&gt; &gt; (10,101,010 samples, 0.02%)</title><rect x="16.0" y="373" width="0.2" height="15.0" fill="rgb(206,224,38)" rx="2" ry="2" />
+<text  x="19.04" y="383.5" ></text>
+</g>
+<g >
+<title>std::__shared_mutex_pthread::unlock (10,101,010 samples, 0.02%)</title><rect x="42.8" y="357" width="0.2" height="15.0" fill="rgb(250,225,49)" rx="2" ry="2" />
+<text  x="45.83" y="367.5" ></text>
+</g>
+<g >
+<title>std::shared_mutex::unlock (10,101,010 samples, 0.02%)</title><rect x="47.7" y="405" width="0.2" height="15.0" fill="rgb(217,199,53)" rx="2" ry="2" />
+<text  x="50.67" y="415.5" ></text>
+</g>
+<g >
+<title>std::unique_lock&lt;std::shared_mutex&gt;::unique_lock (50,505,050 samples, 0.09%)</title><rect x="46.5" y="421" width="1.0" height="15.0" fill="rgb(216,19,37)" rx="2" ry="2" />
+<text  x="49.46" y="431.5" ></text>
+</g>
+<g >
+<title>std::shared_mutex::try_lock (30,303,030 samples, 0.05%)</title><rect x="42.0" y="389" width="0.6" height="15.0" fill="rgb(233,47,44)" rx="2" ry="2" />
+<text  x="45.03" y="399.5" ></text>
+</g>
+<g >
+<title>std::__detail::_Hash_node_value_base&lt;std::pair&lt;void* const, Reclaimer::ReclaimNode*&gt; &gt;::_M_v (10,101,010 samples, 0.02%)</title><rect x="34.0" y="341" width="0.2" height="15.0" fill="rgb(229,85,50)" rx="2" ry="2" />
+<text  x="36.97" y="351.5" ></text>
+</g>
+<g >
+<title>std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;::_M_construct&lt;char*&gt; (10,101,010 samples, 0.02%)</title><rect x="45.0" y="437" width="0.3" height="15.0" fill="rgb(252,184,46)" rx="2" ry="2" />
+<text  x="48.05" y="447.5" ></text>
+</g>
+<g >
+<title>std::unique_lock&lt;std::shared_mutex&gt;::~unique_lock (20,202,020 samples, 0.03%)</title><rect x="42.6" y="405" width="0.4" height="15.0" fill="rgb(249,90,38)" rx="2" ry="2" />
+<text  x="45.63" y="415.5" ></text>
+</g>
+<g >
+<title>LockFreeHashTable&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, double_link_list&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;::Node*, std::hash&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt; &gt;::Node::get_next (30,303,030 samples, 0.05%)</title><rect x="31.6" y="389" width="0.6" height="15.0" fill="rgb(233,55,1)" rx="2" ry="2" />
+<text  x="34.55" y="399.5" ></text>
+</g>
+<g >
+<title>std::swap&lt;bool  (10,101,010 samples, 0.02%)</title><rect x="33.0" y="341" width="0.2" height="15.0" fill="rgb(236,105,12)" rx="2" ry="2" />
+<text  x="35.96" y="351.5" ></text>
+</g>
+<g >
+<title>std::__detail::_Select1st::operator (10,101,010 samples, 0.02%)</title><rect x="34.2" y="341" width="0.2" height="15.0" fill="rgb(224,203,3)" rx="2" ry="2" />
+<text  x="37.17" y="351.5" ></text>
+</g>
+<g >
+<title>__schedule (10,101,010 samples, 0.02%)</title><rect x="1025.8" y="309" width="0.2" height="15.0" fill="rgb(241,61,51)" rx="2" ry="2" />
+<text  x="1028.83" y="319.5" ></text>
+</g>
+<g >
+<title>std::unordered_set&lt;void*, std::hash&lt;void*&gt;, std::equal_to&lt;void*&gt;, std::allocator&lt;void*&gt; &gt;::~unordered_set (30,303,030 samples, 0.05%)</title><rect x="37.6" y="389" width="0.6" height="15.0" fill="rgb(212,91,25)" rx="2" ry="2" />
+<text  x="40.60" y="399.5" ></text>
+</g>
+<g >
+<title>LockFreeHashTable&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, double_link_list&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;::Node*, std::hash&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt; &gt;::Less (10,101,010 samples, 0.02%)</title><rect x="15.2" y="389" width="0.2" height="15.0" fill="rgb(222,137,47)" rx="2" ry="2" />
+<text  x="18.24" y="399.5" ></text>
+</g>
+<g >
+<title>napi_complete_done (10,101,010 samples, 0.02%)</title><rect x="1024.6" y="293" width="0.2" height="15.0" fill="rgb(228,206,1)" rx="2" ry="2" />
+<text  x="1027.62" y="303.5" ></text>
+</g>
+<g >
+<title>malloc (10,101,010 samples, 0.02%)</title><rect x="12.2" y="613" width="0.2" height="15.0" fill="rgb(216,219,43)" rx="2" ry="2" />
+<text  x="15.22" y="623.5" ></text>
+</g>
+<g >
+<title>std::function&lt;void  (10,101,010 samples, 0.02%)</title><rect x="16.2" y="405" width="0.2" height="15.0" fill="rgb(226,141,43)" rx="2" ry="2" />
+<text  x="19.24" y="415.5" ></text>
+</g>
+<g >
+<title>std::_Hashtable&lt;void*, void*, std::allocator&lt;void*&gt;, std::__detail::_Identity, std::equal_to&lt;void*&gt;, std::hash&lt;void*&gt;, std::__detail::_Mod_range_hashing, std::__detail::_Default_ranged_hash, std::__detail::_Prime_rehash_policy, std::__detail::_Hashtable_traits&lt;false, true, true&gt; &gt;::find (20,202,020 samples, 0.03%)</title><rect x="17.1" y="389" width="0.4" height="15.0" fill="rgb(232,228,10)" rx="2" ry="2" />
+<text  x="20.05" y="399.5" ></text>
+</g>
+<g >
+<title>std::get&lt;0ul, void* const, Reclaimer::ReclaimNode*&gt; (10,101,010 samples, 0.02%)</title><rect x="34.2" y="325" width="0.2" height="15.0" fill="rgb(214,128,54)" rx="2" ry="2" />
+<text  x="37.17" y="335.5" ></text>
+</g>
+<g >
+<title>std::_Hashtable&lt;void*, void*, std::allocator&lt;void*&gt;, std::__detail::_Identity, std::equal_to&lt;void*&gt;, std::hash&lt;void*&gt;, std::__detail::_Mod_range_hashing, std::__detail::_Default_ranged_hash, std::__detail::_Prime_rehash_policy, std::__detail::_Hashtable_traits&lt;false, true, true&gt; &gt;::_M_insert&lt;void* const&amp;, std::__detail::_AllocNode&lt;std::allocator&lt;std::__detail::_Hash_node&lt;void*, false&gt; &gt; &gt; &gt; (30,303,030 samples, 0.05%)</title><rect x="17.5" y="373" width="0.6" height="15.0" fill="rgb(223,118,12)" rx="2" ry="2" />
+<text  x="20.45" y="383.5" ></text>
+</g>
+<g >
+<title>sysvec_hyperv_callback (10,101,010 samples, 0.02%)</title><rect x="1024.6" y="405" width="0.2" height="15.0" fill="rgb(240,120,32)" rx="2" ry="2" />
+<text  x="1027.62" y="415.5" ></text>
+</g>
+<g >
+<title>std::function&lt;void  (20,202,020 samples, 0.03%)</title><rect x="15.6" y="389" width="0.4" height="15.0" fill="rgb(215,66,53)" rx="2" ry="2" />
+<text  x="18.64" y="399.5" ></text>
+</g>
+<g >
+<title>LRUCache&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, LockFreeHashTable&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, double_link_list&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;::Node*, std::hash&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt; &gt;, operate_list&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;, double_link_list&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;::Node&gt;::put (1,313,131,300 samples, 2.22%)</title><rect x="22.3" y="469" width="26.2" height="15.0" fill="rgb(217,105,20)" rx="2" ry="2" />
+<text  x="25.29" y="479.5" >L..</text>
+</g>
+<g >
+<title>std::move&lt;void  (10,101,010 samples, 0.02%)</title><rect x="15.8" y="357" width="0.2" height="15.0" fill="rgb(225,23,7)" rx="2" ry="2" />
+<text  x="18.84" y="367.5" ></text>
+</g>
+<g >
+<title>Reclaimer::ReclaimNoHazardPointer (191,919,190 samples, 0.32%)</title><rect x="34.4" y="405" width="3.8" height="15.0" fill="rgb(226,93,18)" rx="2" ry="2" />
+<text  x="37.37" y="415.5" ></text>
+</g>
+<g >
+<title>__irq_exit_rcu (10,101,010 samples, 0.02%)</title><rect x="1024.6" y="373" width="0.2" height="15.0" fill="rgb(219,217,54)" rx="2" ry="2" />
+<text  x="1027.62" y="383.5" ></text>
+</g>
+<g >
+<title>LockFreeHashTable&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, double_link_list&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;::Node*, std::hash&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt; &gt;::SearchNode (50,505,050 samples, 0.09%)</title><rect x="31.2" y="405" width="1.0" height="15.0" fill="rgb(233,159,4)" rx="2" ry="2" />
+<text  x="34.15" y="415.5" ></text>
+</g>
+<g >
+<title>std::shared_mutex::unlock (20,202,020 samples, 0.03%)</title><rect x="47.9" y="389" width="0.4" height="15.0" fill="rgb(243,126,2)" rx="2" ry="2" />
+<text  x="50.87" y="399.5" ></text>
+</g>
+<g >
+<title>LockFreeHashTable&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, double_link_list&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;::Node*, std::hash&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt; &gt;::Node::~Node (10,101,010 samples, 0.02%)</title><rect x="18.9" y="421" width="0.2" height="15.0" fill="rgb(206,185,30)" rx="2" ry="2" />
+<text  x="21.86" y="431.5" ></text>
+</g>
+<g >
+<title>std::mersenne_twister_engine&lt;unsigned long, 32ul, 624ul, 397ul, 31ul, 2567483615ul, 11ul, 4294967295ul, 7ul, 2636928640ul, 15ul, 4022730752ul, 18ul, 1812433253ul&gt;::_M_gen_rand (10,101,010 samples, 0.02%)</title><rect x="1187.8" y="389" width="0.2" height="15.0" fill="rgb(245,177,32)" rx="2" ry="2" />
+<text  x="1190.78" y="399.5" ></text>
+</g>
+<g >
+<title>std::unique_lock&lt;std::shared_mutex&gt;::unlock (10,101,010 samples, 0.02%)</title><rect x="42.8" y="389" width="0.2" height="15.0" fill="rgb(230,224,11)" rx="2" ry="2" />
+<text  x="45.83" y="399.5" ></text>
+</g>
+<g >
+<title>std::__detail::_Hashtable_alloc&lt;std::allocator&lt;std::__detail::_Hash_node&lt;std::pair&lt;void* const, Reclaimer::ReclaimNode*&gt;, false&gt; &gt; &gt;::_M_node_allocator (10,101,010 samples, 0.02%)</title><rect x="16.6" y="341" width="0.2" height="15.0" fill="rgb(229,153,20)" rx="2" ry="2" />
+<text  x="19.65" y="351.5" ></text>
+</g>
+<g >
+<title>__pthread_rwlock_unlock (50,505,050 samples, 0.09%)</title><rect x="10.8" y="613" width="1.0" height="15.0" fill="rgb(213,229,49)" rx="2" ry="2" />
+<text  x="13.81" y="623.5" ></text>
+</g>
+<g >
+<title>ZipfianStringGenerator::generateZipfianIndex (55,909,090,350 samples, 94.49%)</title><rect x="48.5" y="453" width="1114.9" height="15.0" fill="rgb(214,30,18)" rx="2" ry="2" />
+<text  x="51.47" y="463.5" >ZipfianStringGenerator::generateZipfianIndex</text>
+</g>
+<g >
+<title>std::__shared_mutex_pthread::try_lock (30,303,030 samples, 0.05%)</title><rect x="42.0" y="373" width="0.6" height="15.0" fill="rgb(226,188,20)" rx="2" ry="2" />
+<text  x="45.03" y="383.5" ></text>
+</g>
+<g >
+<title>std::_Hashtable&lt;void*, std::pair&lt;void* const, Reclaimer::ReclaimNode*&gt;, std::allocator&lt;std::pair&lt;void* const, Reclaimer::ReclaimNode*&gt; &gt;, std::__detail::_Select1st, std::equal_to&lt;void*&gt;, std::hash&lt;void*&gt;, std::__detail::_Mod_range_hashing, std::__detail::_Default_ranged_hash, std::__detail::_Prime_rehash_policy, std::__detail::_Hashtable_traits&lt;false, false, true&gt; &gt;::erase (20,202,020 samples, 0.03%)</title><rect x="16.4" y="389" width="0.4" height="15.0" fill="rgb(238,124,54)" rx="2" ry="2" />
+<text  x="19.45" y="399.5" ></text>
+</g>
+<g >
+<title>__sk_mem_reclaim (10,101,010 samples, 0.02%)</title><rect x="1025.4" y="261" width="0.2" height="15.0" fill="rgb(209,48,0)" rx="2" ry="2" />
+<text  x="1028.43" y="271.5" ></text>
+</g>
+<g >
+<title>HazardPointer::operator= (10,101,010 samples, 0.02%)</title><rect x="30.1" y="405" width="0.2" height="15.0" fill="rgb(251,152,27)" rx="2" ry="2" />
+<text  x="33.14" y="415.5" ></text>
+</g>
+<g >
+<title>std::operator&amp; (10,101,010 samples, 0.02%)</title><rect x="19.5" y="373" width="0.2" height="15.0" fill="rgb(224,6,39)" rx="2" ry="2" />
+<text  x="22.47" y="383.5" ></text>
+</g>
+<g >
+<title>std::_Hashtable&lt;void*, std::pair&lt;void* const, Reclaimer::ReclaimNode*&gt;, std::allocator&lt;std::pair&lt;void* const, Reclaimer::ReclaimNode*&gt; &gt;, std::__detail::_Select1st, std::equal_to&lt;void*&gt;, std::hash&lt;void*&gt;, std::__detail::_Mod_range_hashing, std::__detail::_Default_ranged_hash, std::__detail::_Prime_rehash_policy, std::__detail::_Hashtable_traits&lt;false, false, true&gt; &gt;::_M_erase (20,202,020 samples, 0.03%)</title><rect x="16.4" y="357" width="0.4" height="15.0" fill="rgb(219,100,53)" rx="2" ry="2" />
+<text  x="19.45" y="367.5" ></text>
+</g>
+<g >
+<title>std::uniform_real_distribution&lt;double&gt;::param_type::a (10,101,010 samples, 0.02%)</title><rect x="1163.2" y="405" width="0.2" height="15.0" fill="rgb(210,3,52)" rx="2" ry="2" />
+<text  x="1166.21" y="415.5" ></text>
+</g>
+<g >
+<title>std::unordered_map&lt;void*, Reclaimer::ReclaimNode*, std::hash&lt;void*&gt;, std::equal_to&lt;void*&gt;, std::allocator&lt;std::pair&lt;void* const, Reclaimer::ReclaimNode*&gt; &gt; &gt;::erase (20,202,020 samples, 0.03%)</title><rect x="16.4" y="405" width="0.4" height="15.0" fill="rgb(208,214,0)" rx="2" ry="2" />
+<text  x="19.45" y="415.5" ></text>
+</g>
+<g >
+<title>std::atomic&lt;LockFreeHashTable&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, double_link_list&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;::Node*, std::hash&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt; &gt;::Node*&gt;::load (10,101,010 samples, 0.02%)</title><rect x="19.5" y="389" width="0.2" height="15.0" fill="rgb(208,59,41)" rx="2" ry="2" />
+<text  x="22.47" y="399.5" ></text>
+</g>
+<g >
+<title>std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;::compare (10,101,010 samples, 0.02%)</title><rect x="24.3" y="373" width="0.2" height="15.0" fill="rgb(224,13,16)" rx="2" ry="2" />
+<text  x="27.30" y="383.5" ></text>
+</g>
+<g >
+<title>std::_Hashtable&lt;void*, void*, std::allocator&lt;void*&gt;, std::__detail::_Identity, std::equal_to&lt;void*&gt;, std::hash&lt;void*&gt;, std::__detail::_Mod_range_hashing, std::__detail::_Default_ranged_hash, std::__detail::_Prime_rehash_policy, std::__detail::_Hashtable_traits&lt;false, true, true&gt; &gt;::_M_insert_unique_node (20,202,020 samples, 0.03%)</title><rect x="17.7" y="357" width="0.4" height="15.0" fill="rgb(216,67,13)" rx="2" ry="2" />
+<text  x="20.65" y="367.5" ></text>
+</g>
+<g >
+<title>std::_Hashtable&lt;void*, void*, std::allocator&lt;void*&gt;, std::__detail::_Identity, std::equal_to&lt;void*&gt;, std::hash&lt;void*&gt;, std::__detail::_Mod_range_hashing, std::__detail::_Default_ranged_hash, std::__detail::_Prime_rehash_policy, std::__detail::_Hashtable_traits&lt;false, true, true&gt; &gt;::_M_deallocate_buckets (10,101,010 samples, 0.02%)</title><rect x="37.6" y="341" width="0.2" height="15.0" fill="rgb(225,64,45)" rx="2" ry="2" />
+<text  x="40.60" y="351.5" ></text>
+</g>
+<g >
+<title>LockFreeHashTable&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, double_link_list&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;::Node*, std::hash&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt; &gt;::GetBucketHeadByIndex (40,404,040 samples, 0.07%)</title><rect x="27.9" y="421" width="0.8" height="15.0" fill="rgb(208,43,27)" rx="2" ry="2" />
+<text  x="30.93" y="431.5" ></text>
+</g>
+<g >
+<title>tcp_data_ready (10,101,010 samples, 0.02%)</title><rect x="1024.6" y="85" width="0.2" height="15.0" fill="rgb(225,27,28)" rx="2" ry="2" />
+<text  x="1027.62" y="95.5" ></text>
+</g>
+<g >
+<title>HazardPointer::HazardPointer (10,101,010 samples, 0.02%)</title><rect x="30.9" y="421" width="0.3" height="15.0" fill="rgb(208,46,26)" rx="2" ry="2" />
+<text  x="33.95" y="431.5" ></text>
+</g>
+<g >
+<title>operate_list&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;::move_to_top (10,101,010 samples, 0.02%)</title><rect x="22.1" y="453" width="0.2" height="15.0" fill="rgb(228,125,32)" rx="2" ry="2" />
+<text  x="25.09" y="463.5" ></text>
+</g>
+<g >
+<title>_int_free (20,202,020 samples, 0.03%)</title><rect x="11.8" y="613" width="0.4" height="15.0" fill="rgb(215,1,41)" rx="2" ry="2" />
+<text  x="14.81" y="623.5" ></text>
+</g>
+<g >
+<title>__softirqentry_text_start (10,101,010 samples, 0.02%)</title><rect x="1024.6" y="357" width="0.2" height="15.0" fill="rgb(228,223,24)" rx="2" ry="2" />
+<text  x="1027.62" y="367.5" ></text>
+</g>
+<g >
+<title>std::operator&amp; (10,101,010 samples, 0.02%)</title><rect x="26.1" y="373" width="0.2" height="15.0" fill="rgb(225,47,48)" rx="2" ry="2" />
+<text  x="29.11" y="383.5" ></text>
+</g>
+<g >
+<title>pthread_rwlock_trywrlock (20,202,020 samples, 0.03%)</title><rect x="44.4" y="357" width="0.4" height="15.0" fill="rgb(250,139,24)" rx="2" ry="2" />
+<text  x="47.45" y="367.5" ></text>
+</g>
+<g >
+<title>__ieee754_pow_fma (20,202,020 samples, 0.03%)</title><rect x="26.7" y="421" width="0.4" height="15.0" fill="rgb(205,160,49)" rx="2" ry="2" />
+<text  x="29.72" y="431.5" ></text>
+</g>
+<g >
+<title>LockFreeHashTable&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, double_link_list&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;::Node*, std::hash&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt; &gt;::Less (10,101,010 samples, 0.02%)</title><rect x="31.4" y="389" width="0.2" height="15.0" fill="rgb(218,96,5)" rx="2" ry="2" />
+<text  x="34.35" y="399.5" ></text>
+</g>
+<g >
+<title>LockFreeHashTable&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, double_link_list&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;::Node*, std::hash&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt; &gt;::SearchNode (30,303,030 samples, 0.05%)</title><rect x="21.3" y="421" width="0.6" height="15.0" fill="rgb(229,12,8)" rx="2" ry="2" />
+<text  x="24.28" y="431.5" ></text>
+</g>
+<g >
+<title>cfree@GLIBC_2.2.5 (10,101,010 samples, 0.02%)</title><rect x="37.8" y="277" width="0.2" height="15.0" fill="rgb(253,215,0)" rx="2" ry="2" />
+<text  x="40.80" y="287.5" ></text>
+</g>
+<g >
+<title>std::vector&lt;Reclaimer::InternalHazardPointer*, std::allocator&lt;Reclaimer::InternalHazardPointer*&gt; &gt;::size (10,101,010 samples, 0.02%)</title><rect x="29.7" y="373" width="0.2" height="15.0" fill="rgb(244,131,14)" rx="2" ry="2" />
+<text  x="32.74" y="383.5" ></text>
+</g>
+<g >
+<title>std::thread::_State_impl&lt;std::thread::_Invoker&lt;std::tuple&lt;void  (58,848,484,260 samples, 99.45%)</title><rect x="14.4" y="565" width="1173.6" height="15.0" fill="rgb(220,138,26)" rx="2" ry="2" />
+<text  x="17.43" y="575.5" >std::thread::_State_impl&lt;std::thread::_Invoker&lt;std::tuple&lt;void </text>
+</g>
+<g >
+<title>LockFreeHashTable&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, double_link_list&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;::Node*, std::hash&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt; &gt;::Node::get_next (20,202,020 samples, 0.03%)</title><rect x="19.5" y="405" width="0.4" height="15.0" fill="rgb(224,210,11)" rx="2" ry="2" />
+<text  x="22.47" y="415.5" ></text>
+</g>
+<g >
+<title>LockFreeHashTable&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, double_link_list&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;::Node*, std::hash&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt; &gt;::RegularNode::RegularNode (30,303,030 samples, 0.05%)</title><rect x="20.1" y="437" width="0.6" height="15.0" fill="rgb(211,102,33)" rx="2" ry="2" />
+<text  x="23.07" y="447.5" ></text>
+</g>
+<g >
+<title>std::unordered_set&lt;void*, std::hash&lt;void*&gt;, std::equal_to&lt;void*&gt;, std::allocator&lt;void*&gt; &gt;::insert (30,303,030 samples, 0.05%)</title><rect x="17.5" y="405" width="0.6" height="15.0" fill="rgb(218,113,43)" rx="2" ry="2" />
+<text  x="20.45" y="415.5" ></text>
+</g>
+<g >
+<title>std::__detail::_Adaptor&lt;std::mersenne_twister_engine&lt;unsigned long, 32ul, 624ul, 397ul, 31ul, 2567483615ul, 11ul, 4294967295ul, 7ul, 2636928640ul, 15ul, 4022730752ul, 18ul, 1812433253ul&gt;, double&gt;::_Adaptor (10,101,010 samples, 0.02%)</title><rect x="1186.8" y="453" width="0.2" height="15.0" fill="rgb(253,65,35)" rx="2" ry="2" />
+<text  x="1189.78" y="463.5" ></text>
+</g>
+<g >
+<title>std::_Hash_bytes (10,101,010 samples, 0.02%)</title><rect x="18.7" y="405" width="0.2" height="15.0" fill="rgb(218,193,7)" rx="2" ry="2" />
+<text  x="21.66" y="415.5" ></text>
+</g>
+<g >
+<title>LockFreeHashTable&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, double_link_list&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;::Node*, std::hash&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt; &gt;::Node::Node (20,202,020 samples, 0.03%)</title><rect x="27.1" y="421" width="0.4" height="15.0" fill="rgb(217,25,35)" rx="2" ry="2" />
+<text  x="30.12" y="431.5" ></text>
+</g>
+<g >
+<title>std::atomic&lt;LockFreeHashTable&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, double_link_list&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;::Node*, std::hash&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt; &gt;::Node*&gt;::atomic (10,101,010 samples, 0.02%)</title><rect x="20.5" y="421" width="0.2" height="15.0" fill="rgb(229,91,20)" rx="2" ry="2" />
+<text  x="23.47" y="431.5" ></text>
+</g>
+<g >
+<title>LockFreeHashTable&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, double_link_list&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;::Node*, std::hash&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt; &gt;::GetBucketHeadByIndex (20,202,020 samples, 0.03%)</title><rect x="39.0" y="405" width="0.4" height="15.0" fill="rgb(228,90,11)" rx="2" ry="2" />
+<text  x="42.01" y="415.5" ></text>
+</g>
+<g >
+<title>tcp_write_timer (10,101,010 samples, 0.02%)</title><rect x="1025.4" y="293" width="0.2" height="15.0" fill="rgb(229,176,9)" rx="2" ry="2" />
+<text  x="1028.43" y="303.5" ></text>
+</g>
+<g >
+<title>pow@@GLIBC_2.29 (10,101,010 samples, 0.02%)</title><rect x="20.9" y="421" width="0.2" height="15.0" fill="rgb(208,159,46)" rx="2" ry="2" />
+<text  x="23.88" y="431.5" ></text>
+</g>
+<g >
+<title>Reclaimer::MarkHazard (10,101,010 samples, 0.02%)</title><rect x="23.9" y="389" width="0.2" height="15.0" fill="rgb(225,47,52)" rx="2" ry="2" />
+<text  x="26.90" y="399.5" ></text>
+</g>
+<g >
+<title>LockFreeHashTable&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, double_link_list&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;::Node*, std::hash&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt; &gt;::SearchNode (90,909,090 samples, 0.15%)</title><rect x="23.3" y="421" width="1.8" height="15.0" fill="rgb(253,46,39)" rx="2" ry="2" />
+<text  x="26.29" y="431.5" ></text>
+</g>
+<g >
+<title>std::_Hashtable&lt;void*, std::pair&lt;void* const, Reclaimer::ReclaimNode*&gt;, std::allocator&lt;std::pair&lt;void* const, Reclaimer::ReclaimNode*&gt; &gt;, std::__detail::_Select1st, std::equal_to&lt;void*&gt;, std::hash&lt;void*&gt;, std::__detail::_Mod_range_hashing, std::__detail::_Default_ranged_hash, std::__detail::_Prime_rehash_policy, std::__detail::_Hashtable_traits&lt;false, false, true&gt; &gt;::erase (50,505,050 samples, 0.09%)</title><rect x="35.4" y="357" width="1.0" height="15.0" fill="rgb(249,70,16)" rx="2" ry="2" />
+<text  x="38.38" y="367.5" ></text>
+</g>
+<g >
+<title>HazardPointer::HazardPointer (20,202,020 samples, 0.03%)</title><rect x="29.5" y="405" width="0.4" height="15.0" fill="rgb(227,100,17)" rx="2" ry="2" />
+<text  x="32.54" y="415.5" ></text>
+</g>
+<g >
+<title>double_link_list&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;::delete_node (90,909,090 samples, 0.15%)</title><rect x="41.4" y="437" width="1.8" height="15.0" fill="rgb(228,62,18)" rx="2" ry="2" />
+<text  x="44.42" y="447.5" ></text>
+</g>
+<g >
+<title>LockFreeHashTable&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, double_link_list&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;::Node*, std::hash&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt; &gt;::GetBucketHeadByHash (90,909,090 samples, 0.15%)</title><rect x="25.3" y="437" width="1.8" height="15.0" fill="rgb(252,42,11)" rx="2" ry="2" />
+<text  x="28.31" y="447.5" ></text>
+</g>
+<g >
+<title>std::shared_mutex::unlock (10,101,010 samples, 0.02%)</title><rect x="42.8" y="373" width="0.2" height="15.0" fill="rgb(249,90,17)" rx="2" ry="2" />
+<text  x="45.83" y="383.5" ></text>
+</g>
+<g >
+<title>load_balance (10,101,010 samples, 0.02%)</title><rect x="1025.2" y="309" width="0.2" height="15.0" fill="rgb(231,143,32)" rx="2" ry="2" />
+<text  x="1028.23" y="319.5" ></text>
+</g>
+<g >
+<title>std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;::basic_string (30,303,030 samples, 0.05%)</title><rect x="1186.2" y="469" width="0.6" height="15.0" fill="rgb(205,5,51)" rx="2" ry="2" />
+<text  x="1189.17" y="479.5" ></text>
+</g>
+<g >
+<title>std::shared_lock&lt;std::shared_mutex&gt;::unlock (10,101,010 samples, 0.02%)</title><rect x="22.1" y="421" width="0.2" height="15.0" fill="rgb(224,138,35)" rx="2" ry="2" />
+<text  x="25.09" y="431.5" ></text>
+</g>
+<g >
+<title>LockFreeHashTable&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, double_link_list&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;::Node*, std::hash&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt; &gt;::DeleteNode (181,818,180 samples, 0.31%)</title><rect x="14.6" y="437" width="3.7" height="15.0" fill="rgb(254,184,14)" rx="2" ry="2" />
+<text  x="17.63" y="447.5" ></text>
+</g>
+<g >
+<title>std::shared_lock&lt;std::shared_mutex&gt;::shared_lock (10,101,010 samples, 0.02%)</title><rect x="41.8" y="405" width="0.2" height="15.0" fill="rgb(243,123,19)" rx="2" ry="2" />
+<text  x="44.83" y="415.5" ></text>
+</g>
+<g >
+<title>std::_Hashtable&lt;void*, std::pair&lt;void* const, Reclaimer::ReclaimNode*&gt;, std::allocator&lt;std::pair&lt;void* const, Reclaimer::ReclaimNode*&gt; &gt;, std::__detail::_Select1st, std::equal_to&lt;void*&gt;, std::hash&lt;void*&gt;, std::__detail::_Mod_range_hashing, std::__detail::_Default_ranged_hash, std::__detail::_Prime_rehash_policy, std::__detail::_Hashtable_traits&lt;false, false, true&gt; &gt;::_M_emplace&lt;std::pair&lt;void*, Reclaimer::ReclaimNode*&gt; &gt; (60,606,060 samples, 0.10%)</title><rect x="33.2" y="357" width="1.2" height="15.0" fill="rgb(252,13,19)" rx="2" ry="2" />
+<text  x="36.16" y="367.5" ></text>
+</g>
+<g >
+<title>HazardPointer::HazardPointer (10,101,010 samples, 0.02%)</title><rect x="22.7" y="421" width="0.2" height="15.0" fill="rgb(248,32,33)" rx="2" ry="2" />
+<text  x="25.69" y="431.5" ></text>
+</g>
+<g >
+<title>std::hash&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;::operator (10,101,010 samples, 0.02%)</title><rect x="18.7" y="421" width="0.2" height="15.0" fill="rgb(253,227,39)" rx="2" ry="2" />
+<text  x="21.66" y="431.5" ></text>
+</g>
+<g >
+<title>std::unique_lock&lt;std::shared_mutex&gt;::owns_lock (10,101,010 samples, 0.02%)</title><rect x="43.0" y="421" width="0.2" height="15.0" fill="rgb(226,32,34)" rx="2" ry="2" />
+<text  x="46.04" y="431.5" ></text>
+</g>
+<g >
+<title>sysvec_hyperv_stimer0 (10,101,010 samples, 0.02%)</title><rect x="1161.4" y="341" width="0.2" height="15.0" fill="rgb(247,150,34)" rx="2" ry="2" />
+<text  x="1164.40" y="351.5" ></text>
+</g>
+<g >
+<title>LockFreeHashTable&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, double_link_list&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;::Node*, std::hash&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt; &gt;::GreaterOrEquals (10,101,010 samples, 0.02%)</title><rect x="15.2" y="405" width="0.2" height="15.0" fill="rgb(215,109,29)" rx="2" ry="2" />
+<text  x="18.24" y="415.5" ></text>
+</g>
+<g >
+<title>std::_Hashtable&lt;void*, std::pair&lt;void* const, Reclaimer::ReclaimNode*&gt;, std::allocator&lt;std::pair&lt;void* const, Reclaimer::ReclaimNode*&gt; &gt;, std::__detail::_Select1st, std::equal_to&lt;void*&gt;, std::hash&lt;void*&gt;, std::__detail::_Mod_range_hashing, std::__detail::_Default_ranged_hash, std::__detail::_Prime_rehash_policy, std::__detail::_Hashtable_traits&lt;false, false, true&gt; &gt;::erase (60,606,060 samples, 0.10%)</title><rect x="35.2" y="373" width="1.2" height="15.0" fill="rgb(228,80,45)" rx="2" ry="2" />
+<text  x="38.18" y="383.5" ></text>
+</g>
+<g >
+<title>[thread_test_zipfain] (464,646,460 samples, 0.79%)</title><rect x="259.2" y="437" width="9.2" height="15.0" fill="rgb(252,7,43)" rx="2" ry="2" />
+<text  x="262.17" y="447.5" ></text>
+</g>
+<g >
+<title>HazardPointer::UnMark (10,101,010 samples, 0.02%)</title><rect x="15.0" y="405" width="0.2" height="15.0" fill="rgb(225,87,12)" rx="2" ry="2" />
+<text  x="18.04" y="415.5" ></text>
+</g>
+<g >
+<title>std::_Function_handler&lt;void  (30,303,030 samples, 0.05%)</title><rect x="34.6" y="373" width="0.6" height="15.0" fill="rgb(239,104,9)" rx="2" ry="2" />
+<text  x="37.57" y="383.5" ></text>
+</g>
+<g >
+<title>LockFreeHashTable&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, double_link_list&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;::Node*, std::hash&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt; &gt;::Node::RegularKey (20,202,020 samples, 0.03%)</title><rect x="27.1" y="405" width="0.4" height="15.0" fill="rgb(214,182,33)" rx="2" ry="2" />
+<text  x="30.12" y="415.5" ></text>
+</g>
+<g >
+<title>LockFreeHashTable&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, double_link_list&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;::Node*, std::hash&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt; &gt;::RegularNode::RegularNode (10,101,010 samples, 0.02%)</title><rect x="18.7" y="437" width="0.2" height="15.0" fill="rgb(228,111,17)" rx="2" ry="2" />
+<text  x="21.66" y="447.5" ></text>
+</g>
+<g >
+<title>std::function&lt;void  (20,202,020 samples, 0.03%)</title><rect x="32.8" y="357" width="0.4" height="15.0" fill="rgb(233,109,12)" rx="2" ry="2" />
+<text  x="35.76" y="367.5" ></text>
+</g>
+<g >
+<title>ip_local_deliver_finish (10,101,010 samples, 0.02%)</title><rect x="1024.6" y="181" width="0.2" height="15.0" fill="rgb(222,150,8)" rx="2" ry="2" />
+<text  x="1027.62" y="191.5" ></text>
+</g>
+<g >
+<title>std::unordered_map&lt;void*, Reclaimer::ReclaimNode*, std::hash&lt;void*&gt;, std::equal_to&lt;void*&gt;, std::allocator&lt;std::pair&lt;void* const, Reclaimer::ReclaimNode*&gt; &gt; &gt;::erase (60,606,060 samples, 0.10%)</title><rect x="35.2" y="389" width="1.2" height="15.0" fill="rgb(219,86,38)" rx="2" ry="2" />
+<text  x="38.18" y="399.5" ></text>
+</g>
+<g >
+<title>std::atomic&lt;LockFreeHashTable&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, double_link_list&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;::Node*, std::hash&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt; &gt;::Node*&gt;::load (30,303,030 samples, 0.05%)</title><rect x="31.6" y="373" width="0.6" height="15.0" fill="rgb(243,221,10)" rx="2" ry="2" />
+<text  x="34.55" y="383.5" ></text>
+</g>
+<g >
+<title>start_task (58,848,484,260 samples, 99.45%)</title><rect x="14.4" y="485" width="1173.6" height="15.0" fill="rgb(221,28,15)" rx="2" ry="2" />
+<text  x="17.43" y="495.5" >start_task</text>
+</g>
+<g >
+<title>LockFreeHashTable&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, double_link_list&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;::Node*, std::hash&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt; &gt;::RegularNode::~RegularNode (10,101,010 samples, 0.02%)</title><rect x="34.8" y="309" width="0.2" height="15.0" fill="rgb(229,37,3)" rx="2" ry="2" />
+<text  x="37.78" y="319.5" ></text>
+</g>
+<g >
+<title>finish_task_switch.isra.0 (10,101,010 samples, 0.02%)</title><rect x="1025.8" y="293" width="0.2" height="15.0" fill="rgb(235,138,20)" rx="2" ry="2" />
+<text  x="1028.83" y="303.5" ></text>
+</g>
+<g >
+<title>std::unordered_map&lt;void*, Reclaimer::ReclaimNode*, std::hash&lt;void*&gt;, std::equal_to&lt;void*&gt;, std::allocator&lt;std::pair&lt;void* const, Reclaimer::ReclaimNode*&gt; &gt; &gt;::insert&lt;std::pair&lt;void*, Reclaimer::ReclaimNode*&gt; &gt; (60,606,060 samples, 0.10%)</title><rect x="33.2" y="389" width="1.2" height="15.0" fill="rgb(234,171,21)" rx="2" ry="2" />
+<text  x="36.16" y="399.5" ></text>
+</g>
+<g >
+<title>std::allocator_traits&lt;std::allocator&lt;std::__detail::_Hash_node_base*&gt; &gt;::deallocate (10,101,010 samples, 0.02%)</title><rect x="37.6" y="309" width="0.2" height="15.0" fill="rgb(207,151,50)" rx="2" ry="2" />
+<text  x="40.60" y="319.5" ></text>
+</g>
+<g >
+<title>std::function&lt;void  (30,303,030 samples, 0.05%)</title><rect x="34.6" y="389" width="0.6" height="15.0" fill="rgb(217,86,11)" rx="2" ry="2" />
+<text  x="37.57" y="399.5" ></text>
+</g>
+<g >
+<title>std::__detail::_Hash_code_base&lt;void*, std::pair&lt;void* const, Reclaimer::ReclaimNode*&gt;, std::__detail::_Select1st, std::hash&lt;void*&gt;, std::__detail::_Mod_range_hashing, std::__detail::_Default_ranged_hash, false&gt;::_M_hash_code (10,101,010 samples, 0.02%)</title><rect x="16.0" y="293" width="0.2" height="15.0" fill="rgb(221,145,20)" rx="2" ry="2" />
+<text  x="19.04" y="303.5" ></text>
+</g>
+<g >
+<title>std::move&lt;void  (10,101,010 samples, 0.02%)</title><rect x="32.8" y="341" width="0.2" height="15.0" fill="rgb(221,0,38)" rx="2" ry="2" />
+<text  x="35.76" y="351.5" ></text>
+</g>
+<g >
+<title>__memmove_avx_unaligned_erms (30,303,030 samples, 0.05%)</title><rect x="10.2" y="613" width="0.6" height="15.0" fill="rgb(250,115,8)" rx="2" ry="2" />
+<text  x="13.20" y="623.5" ></text>
+</g>
+<g >
+<title>irq_exit_rcu (10,101,010 samples, 0.02%)</title><rect x="1120.9" y="389" width="0.2" height="15.0" fill="rgb(238,142,14)" rx="2" ry="2" />
+<text  x="1123.91" y="399.5" ></text>
+</g>
+<g >
+<title>std::_Hashtable&lt;void*, std::pair&lt;void* const, Reclaimer::ReclaimNode*&gt;, std::allocator&lt;std::pair&lt;void* const, Reclaimer::ReclaimNode*&gt; &gt;, std::__detail::_Select1st, std::equal_to&lt;void*&gt;, std::hash&lt;void*&gt;, std::__detail::_Mod_range_hashing, std::__detail::_Default_ranged_hash, std::__detail::_Prime_rehash_policy, std::__detail::_Hashtable_traits&lt;false, false, true&gt; &gt;::emplace&lt;std::pair&lt;void*, Reclaimer::ReclaimNode*&gt; &gt; (60,606,060 samples, 0.10%)</title><rect x="33.2" y="373" width="1.2" height="15.0" fill="rgb(225,189,49)" rx="2" ry="2" />
+<text  x="36.16" y="383.5" ></text>
+</g>
+<g >
+<title>std::_Hashtable&lt;void*, std::pair&lt;void* const, Reclaimer::ReclaimNode*&gt;, std::allocator&lt;std::pair&lt;void* const, Reclaimer::ReclaimNode*&gt; &gt;, std::__detail::_Select1st, std::equal_to&lt;void*&gt;, std::hash&lt;void*&gt;, std::__detail::_Mod_range_hashing, std::__detail::_Default_ranged_hash, std::__detail::_Prime_rehash_policy, std::__detail::_Hashtable_traits&lt;false, false, true&gt; &gt;::_M_remove_bucket_begin (10,101,010 samples, 0.02%)</title><rect x="16.4" y="341" width="0.2" height="15.0" fill="rgb(237,158,7)" rx="2" ry="2" />
+<text  x="19.45" y="351.5" ></text>
+</g>
+<g >
+<title>std::__detail::_Hashtable_alloc&lt;std::allocator&lt;std::__detail::_Hash_node&lt;std::pair&lt;void* const, Reclaimer::ReclaimNode*&gt;, false&gt; &gt; &gt;::_M_deallocate_node (10,101,010 samples, 0.02%)</title><rect x="36.2" y="325" width="0.2" height="15.0" fill="rgb(236,75,12)" rx="2" ry="2" />
+<text  x="39.19" y="335.5" ></text>
+</g>
+<g >
+<title>Reclaimer::ReclaimPool::Pop (10,101,010 samples, 0.02%)</title><rect x="32.2" y="389" width="0.2" height="15.0" fill="rgb(207,106,42)" rx="2" ry="2" />
+<text  x="35.16" y="399.5" ></text>
+</g>
+<g >
+<title>__irq_exit_rcu (40,404,040 samples, 0.07%)</title><rect x="1024.8" y="373" width="0.8" height="15.0" fill="rgb(228,226,20)" rx="2" ry="2" />
+<text  x="1027.82" y="383.5" ></text>
+</g>
+<g >
+<title>std::__detail::_Select1st::operator (10,101,010 samples, 0.02%)</title><rect x="33.4" y="293" width="0.2" height="15.0" fill="rgb(206,3,3)" rx="2" ry="2" />
+<text  x="36.37" y="303.5" ></text>
+</g>
+<g >
+<title>__ieee754_pow_fma (37,989,898,610 samples, 64.20%)</title><rect x="268.4" y="437" width="757.6" height="15.0" fill="rgb(232,224,8)" rx="2" ry="2" />
+<text  x="271.44" y="447.5" >__ieee754_pow_fma</text>
+</g>
+<g >
+<title>std::_Function_base::~_Function_base (10,101,010 samples, 0.02%)</title><rect x="32.6" y="357" width="0.2" height="15.0" fill="rgb(206,112,35)" rx="2" ry="2" />
+<text  x="35.56" y="367.5" ></text>
+</g>
+<g >
+<title>LockFreeHashTable&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, double_link_list&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;::Node*, std::hash&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt; &gt;::Segment::get_sub_segments (20,202,020 samples, 0.03%)</title><rect x="28.3" y="405" width="0.4" height="15.0" fill="rgb(253,130,21)" rx="2" ry="2" />
+<text  x="31.33" y="415.5" ></text>
+</g>
+<g >
+<title>std::function&lt;void  (30,303,030 samples, 0.05%)</title><rect x="32.6" y="389" width="0.6" height="15.0" fill="rgb(219,223,54)" rx="2" ry="2" />
+<text  x="35.56" y="399.5" ></text>
+</g>
+<g >
+<title>LockFreeHashTable&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, double_link_list&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;::Node*, std::hash&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt; &gt;::Node::Reverse (20,202,020 samples, 0.03%)</title><rect x="27.1" y="389" width="0.4" height="15.0" fill="rgb(252,19,9)" rx="2" ry="2" />
+<text  x="30.12" y="399.5" ></text>
+</g>
+<g >
+<title>std::_Hashtable&lt;void*, void*, std::allocator&lt;void*&gt;, std::__detail::_Identity, std::equal_to&lt;void*&gt;, std::hash&lt;void*&gt;, std::__detail::_Mod_range_hashing, std::__detail::_Default_ranged_hash, std::__detail::_Prime_rehash_policy, std::__detail::_Hashtable_traits&lt;false, true, true&gt; &gt;::_M_find_before_node (10,101,010 samples, 0.02%)</title><rect x="17.3" y="357" width="0.2" height="15.0" fill="rgb(227,144,39)" rx="2" ry="2" />
+<text  x="20.25" y="367.5" ></text>
+</g>
+<g >
+<title>std::_Hashtable&lt;void*, void*, std::allocator&lt;void*&gt;, std::__detail::_Identity, std::equal_to&lt;void*&gt;, std::hash&lt;void*&gt;, std::__detail::_Mod_range_hashing, std::__detail::_Default_ranged_hash, std::__detail::_Prime_rehash_policy, std::__detail::_Hashtable_traits&lt;false, true, true&gt; &gt;::_M_insert&lt;void* const&amp;, std::__detail::_AllocNode&lt;std::allocator&lt;std::__detail::_Hash_node&lt;void*, false&gt; &gt; &gt; &gt; (50,505,050 samples, 0.09%)</title><rect x="36.6" y="357" width="1.0" height="15.0" fill="rgb(222,105,41)" rx="2" ry="2" />
+<text  x="39.59" y="367.5" ></text>
+</g>
+<g >
+<title>std::__detail::_Hashtable_alloc&lt;std::allocator&lt;std::__detail::_Hash_node&lt;void*, false&gt; &gt; &gt;::_M_allocate_node&lt;void* const&amp;&gt; (20,202,020 samples, 0.03%)</title><rect x="37.0" y="325" width="0.4" height="15.0" fill="rgb(233,82,17)" rx="2" ry="2" />
+<text  x="39.99" y="335.5" ></text>
+</g>
+<g >
+<title>std::atomic&lt;void*&gt;::load (10,101,010 samples, 0.02%)</title><rect x="28.5" y="389" width="0.2" height="15.0" fill="rgb(250,157,11)" rx="2" ry="2" />
+<text  x="31.53" y="399.5" ></text>
+</g>
+<g >
+<title>net_rx_action (10,101,010 samples, 0.02%)</title><rect x="1024.6" y="341" width="0.2" height="15.0" fill="rgb(226,170,28)" rx="2" ry="2" />
+<text  x="1027.62" y="351.5" ></text>
+</g>
+<g >
+<title>std::unique_lock&lt;std::shared_mutex&gt;::unique_lock (30,303,030 samples, 0.05%)</title><rect x="45.7" y="421" width="0.6" height="15.0" fill="rgb(220,206,21)" rx="2" ry="2" />
+<text  x="48.65" y="431.5" ></text>
+</g>
+<g >
+<title>std::forward&lt;std::pair&lt;void* const, Reclaimer::ReclaimNode*&gt; const&amp;&gt; (10,101,010 samples, 0.02%)</title><rect x="35.8" y="293" width="0.2" height="15.0" fill="rgb(210,141,5)" rx="2" ry="2" />
+<text  x="38.78" y="303.5" ></text>
+</g>
+<g >
+<title>std::_Hashtable&lt;void*, std::pair&lt;void* const, Reclaimer::ReclaimNode*&gt;, std::allocator&lt;std::pair&lt;void* const, Reclaimer::ReclaimNode*&gt; &gt;, std::__detail::_Select1st, std::equal_to&lt;void*&gt;, std::hash&lt;void*&gt;, std::__detail::_Mod_range_hashing, std::__detail::_Default_ranged_hash, std::__detail::_Prime_rehash_policy, std::__detail::_Hashtable_traits&lt;false, false, true&gt; &gt;::_M_find_node (10,101,010 samples, 0.02%)</title><rect x="33.4" y="341" width="0.2" height="15.0" fill="rgb(240,169,20)" rx="2" ry="2" />
+<text  x="36.37" y="351.5" ></text>
+</g>
+<g >
+<title>[thread_test_zipfain] (10,101,010 samples, 0.02%)</title><rect x="28.7" y="421" width="0.2" height="15.0" fill="rgb(229,79,0)" rx="2" ry="2" />
+<text  x="31.73" y="431.5" ></text>
+</g>
+<g >
+<title>LockFreeHashTable&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, double_link_list&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;::Node*, std::hash&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt; &gt;::RegularNode::~RegularNode (10,101,010 samples, 0.02%)</title><rect x="27.5" y="437" width="0.2" height="15.0" fill="rgb(244,226,49)" rx="2" ry="2" />
+<text  x="30.52" y="447.5" ></text>
+</g>
+<g >
+<title>LockFreeHashTable&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, double_link_list&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;::Node*, std::hash&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt; &gt;::GetBucketHeadByHash (60,606,060 samples, 0.10%)</title><rect x="27.9" y="437" width="1.2" height="15.0" fill="rgb(226,97,31)" rx="2" ry="2" />
+<text  x="30.93" y="447.5" ></text>
+</g>
+<g >
+<title>std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;::_M_construct&lt;char*&gt; (90,909,090 samples, 0.15%)</title><rect x="12.4" y="613" width="1.8" height="15.0" fill="rgb(225,22,6)" rx="2" ry="2" />
+<text  x="15.42" y="623.5" ></text>
+</g>
+<g >
+<title>std::hash&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;::operator (10,101,010 samples, 0.02%)</title><rect x="40.6" y="405" width="0.2" height="15.0" fill="rgb(213,86,26)" rx="2" ry="2" />
+<text  x="43.62" y="415.5" ></text>
+</g>
+<g >
+<title>std::_Hashtable&lt;void*, void*, std::allocator&lt;void*&gt;, std::__detail::_Identity, std::equal_to&lt;void*&gt;, std::hash&lt;void*&gt;, std::__detail::_Mod_range_hashing, std::__detail::_Default_ranged_hash, std::__detail::_Prime_rehash_policy, std::__detail::_Hashtable_traits&lt;false, true, true&gt; &gt;::clear (10,101,010 samples, 0.02%)</title><rect x="18.1" y="373" width="0.2" height="15.0" fill="rgb(236,49,19)" rx="2" ry="2" />
+<text  x="21.06" y="383.5" ></text>
+</g>
+<g >
+<title>double_link_list&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;::remove_node (10,101,010 samples, 0.02%)</title><rect x="22.1" y="437" width="0.2" height="15.0" fill="rgb(232,224,10)" rx="2" ry="2" />
+<text  x="25.09" y="447.5" ></text>
+</g>
+<g >
+<title>std::_Hashtable&lt;void*, std::pair&lt;void* const, Reclaimer::ReclaimNode*&gt;, std::allocator&lt;std::pair&lt;void* const, Reclaimer::ReclaimNode*&gt; &gt;, std::__detail::_Select1st, std::equal_to&lt;void*&gt;, std::hash&lt;void*&gt;, std::__detail::_Mod_range_hashing, std::__detail::_Default_ranged_hash, std::__detail::_Prime_rehash_policy, std::__detail::_Hashtable_traits&lt;false, false, true&gt; &gt;::_M_bucket_index (20,202,020 samples, 0.03%)</title><rect x="35.6" y="341" width="0.4" height="15.0" fill="rgb(245,216,35)" rx="2" ry="2" />
+<text  x="38.58" y="351.5" ></text>
+</g>
+<g >
+<title>tcp_rcv_established (10,101,010 samples, 0.02%)</title><rect x="1024.6" y="117" width="0.2" height="15.0" fill="rgb(237,42,47)" rx="2" ry="2" />
+<text  x="1027.62" y="127.5" ></text>
+</g>
+<g >
+<title>std::mersenne_twister_engine&lt;unsigned long, 32ul, 624ul, 397ul, 31ul, 2567483615ul, 11ul, 4294967295ul, 7ul, 2636928640ul, 15ul, 4022730752ul, 18ul, 1812433253ul&gt;::operator (141,414,140 samples, 0.24%)</title><rect x="1160.2" y="373" width="2.8" height="15.0" fill="rgb(222,7,23)" rx="2" ry="2" />
+<text  x="1163.19" y="383.5" ></text>
+</g>
+<g >
+<title>LockFreeHashTable&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, double_link_list&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;::Node*, std::hash&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt; &gt;::Less (10,101,010 samples, 0.02%)</title><rect x="24.3" y="389" width="0.2" height="15.0" fill="rgb(245,141,14)" rx="2" ry="2" />
+<text  x="27.30" y="399.5" ></text>
+</g>
+<g >
+<title>malloc (60,606,060 samples, 0.10%)</title><rect x="1188.8" y="629" width="1.2" height="15.0" fill="rgb(205,55,7)" rx="2" ry="2" />
+<text  x="1191.79" y="639.5" ></text>
+</g>
+<g >
+<title>LockFreeHashTable&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, double_link_list&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;::Node*, std::hash&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt; &gt;::SearchNode (40,404,040 samples, 0.07%)</title><rect x="14.8" y="421" width="0.8" height="15.0" fill="rgb(217,133,9)" rx="2" ry="2" />
+<text  x="17.83" y="431.5" ></text>
+</g>
+<g >
+<title>__gnu_cxx::new_allocator&lt;std::__detail::_Hash_node&lt;std::pair&lt;void* const, Reclaimer::ReclaimNode*&gt;, false&gt; &gt;::construct&lt;std::pair&lt;void* const, Reclaimer::ReclaimNode*&gt;, std::pair&lt;void*, Reclaimer::ReclaimNode*&gt; &gt; (10,101,010 samples, 0.02%)</title><rect x="33.8" y="293" width="0.2" height="15.0" fill="rgb(237,88,14)" rx="2" ry="2" />
+<text  x="36.77" y="303.5" ></text>
+</g>
+<g >
+<title>LockFreeHashTable&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, double_link_list&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;::Node*, std::hash&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt; &gt;::bucket_size (10,101,010 samples, 0.02%)</title><rect x="26.5" y="421" width="0.2" height="15.0" fill="rgb(226,196,38)" rx="2" ry="2" />
+<text  x="29.52" y="431.5" ></text>
+</g>
+<g >
+<title>LockFreeHashTable&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, double_link_list&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;::Node*, std::hash&lt;std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt; &gt;::InsertRegularNode (40,404,040 samples, 0.07%)</title><rect x="21.1" y="437" width="0.8" height="15.0" fill="rgb(213,84,41)" rx="2" ry="2" />
+<text  x="24.08" y="447.5" ></text>
+</g>
+<g >
+<title>[libstdc++.so.6.0.29] (10,101,010 samples, 0.02%)</title><rect x="10.0" y="613" width="0.2" height="15.0" fill="rgb(208,134,16)" rx="2" ry="2" />
+<text  x="13.00" y="623.5" ></text>
+</g>
+</g>
+</svg>

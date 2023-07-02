@@ -38,15 +38,17 @@ struct Task {
 Task task[client_num + 1][job_num / client_num + 1];
 std::thread threads[client_num];
 void start_task(int client_id, LRUCache<key_type, value_type, hash_type, list_type, node_type> *cache) {
-    for (int i = 1;i <= job_num / client_num;i ++) {
-        Task now = task[client_id][i];
-        if (now.job_type) { // get
-            if (cache->get(now.key) != error_info) {
-                hit_sum.fetch_add(1);
+    while(true) {
+        for (int i = 1;i <= job_num / client_num;i ++) {
+            Task now = task[client_id][i];
+            if (now.job_type) { // get
+                if (cache->get(now.key) != error_info) {
+                    hit_sum.fetch_add(1);
+                }
+                get_sum.fetch_add(1);
+            } else {
+                cache->put(now.key, now.value);
             }
-            get_sum.fetch_add(1);
-        } else {
-            cache->put(now.key, now.value);
         }
     }
 }
